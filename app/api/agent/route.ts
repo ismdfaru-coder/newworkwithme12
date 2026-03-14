@@ -56,43 +56,67 @@ async function getAllSteps(
   
   const requestBody = {
     model: "openai/gpt-4o-mini",
-    max_tokens: 2000,
+    max_tokens: 4000,
     messages: [
       {
         role: "system",
-        content: `You are a browser automation planner. Generate a COMPLETE sequence of commands to accomplish the given task.
+        content: `You are an expert browser automation planner. Generate a DETAILED and COMPLETE sequence of commands to fully accomplish the given task from start to finish.
 
 AVAILABLE COMMANDS:
-- agent-browser open <URL>           → Opens a webpage
-- agent-browser snapshot -i          → Returns list of page elements with [ref=eNN] identifiers  
+- agent-browser open <URL>           → Opens a webpage (page takes time to load)
+- agent-browser snapshot -i          → Returns list of ALL page elements with [ref=eNN] identifiers  
 - agent-browser click @eNN           → Clicks element with that ref (e.g., @e5, @e16)
 - agent-browser fill @eNN "text"     → Types text into input field with that ref
+- agent-browser scroll down          → Scrolls down the page
+- agent-browser scroll up            → Scrolls up the page
+- agent-browser wait 2000            → Waits for specified milliseconds
 
-PLANNING RULES:
-1. Start with "agent-browser open <URL>" for the relevant website
-2. After "open", include "agent-browser snapshot -i" to see the page
-3. Use placeholder refs like @e1, @e2, etc. - these will be matched to actual elements during execution
-4. For form filling, use descriptive placeholders that can be matched: @input_search, @input_from, @input_to, @button_submit
-5. Include snapshot commands after key actions to see results
-6. Plan for common UI patterns (search boxes, buttons, links)
+CRITICAL PLANNING RULES:
+1. ALWAYS start with "agent-browser open <URL>" for the target website
+2. ALWAYS follow "open" with "agent-browser snapshot -i" to discover page elements
+3. After EVERY click or fill action, add "agent-browser snapshot -i" to see the updated page state
+4. Use descriptive placeholder refs: @input_from, @input_to, @input_search, @input_date, @button_search, @button_submit, @link_first_result
+5. For flight/travel searches, include ALL required fields: origin, destination, dates, passenger count
+6. After search submission, wait and take snapshot to see results
+7. If selecting from results, click the appropriate result item
+8. Generate AT LEAST 10-15 steps for complex tasks like flight searches
+9. ALWAYS include final steps to verify the task is complete
+
+EXAMPLE FOR FLIGHT SEARCH:
+{
+  "steps": [
+    { "cmd": "agent-browser open https://www.google.com/travel/flights", "reason": "Navigate to Google Flights" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Discover page elements and input fields" },
+    { "cmd": "agent-browser click @input_from", "reason": "Click on departure city field" },
+    { "cmd": "agent-browser fill @input_from \\"Chennai\\"", "reason": "Enter departure city" },
+    { "cmd": "agent-browser snapshot -i", "reason": "See autocomplete suggestions" },
+    { "cmd": "agent-browser click @suggestion_first", "reason": "Select first suggestion" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Confirm selection and see destination field" },
+    { "cmd": "agent-browser click @input_to", "reason": "Click on destination field" },
+    { "cmd": "agent-browser fill @input_to \\"Manchester\\"", "reason": "Enter destination city" },
+    { "cmd": "agent-browser snapshot -i", "reason": "See autocomplete suggestions" },
+    { "cmd": "agent-browser click @suggestion_first", "reason": "Select first destination suggestion" },
+    { "cmd": "agent-browser snapshot -i", "reason": "See date picker or search options" },
+    { "cmd": "agent-browser click @button_search", "reason": "Click search/explore button" },
+    { "cmd": "agent-browser wait 3000", "reason": "Wait for flight results to load" },
+    { "cmd": "agent-browser snapshot -i", "reason": "View available flight options" },
+    { "cmd": "agent-browser scroll down", "reason": "Scroll to see more flight options" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Capture final results" }
+  ],
+  "summary": "Complete flight search from Chennai to Manchester with result verification"
+}
 
 OUTPUT FORMAT (JSON only, no markdown):
 {
-  "steps": [
-    { "cmd": "agent-browser open https://example.com", "reason": "Navigate to the website" },
-    { "cmd": "agent-browser snapshot -i", "reason": "Get page elements" },
-    { "cmd": "agent-browser fill @input_search \\"search term\\"", "reason": "Enter search query" },
-    { "cmd": "agent-browser click @button_submit", "reason": "Submit the search" },
-    { "cmd": "agent-browser snapshot -i", "reason": "View search results" }
-  ],
-  "summary": "Brief description of what this plan accomplishes"
+  "steps": [...],
+  "summary": "Detailed description of what this plan accomplishes"
 }`
       },
       {
         role: "user",
         content: `TASK: ${task}
 
-Generate a complete sequence of browser commands to accomplish this task. Include all necessary steps from start to finish.`
+Generate a COMPLETE and DETAILED sequence of browser commands (minimum 10-15 steps for complex tasks). Include snapshot commands after EVERY interaction to verify state. Do not skip any steps. The browser needs time between actions.`
       }
     ],
   };
@@ -338,11 +362,12 @@ export async function GET(req: Request) {
             // Wait for browser to complete the action with appropriate delays
             if (isOpenCmd) {
               // Wait longer for page to fully load
-              send("step", { type: "info", desc: `Waiting for page to load...` });
-              await new Promise(r => setTimeout(r, 3000));
+              send("step", { type: "info", desc: `Waiting for page to load (5s)...` });
+              await new Promise(r => setTimeout(r, 5000));
             } else if (isClickCmd || isFillCmd) {
               // Wait for click/fill action to complete
-              await new Promise(r => setTimeout(r, 1500));
+              send("step", { type: "info", desc: `Waiting for action to complete (3s)...` });
+              await new Promise(r => setTimeout(r, 3000));
               
               // Auto-snapshot after click/fill to verify and get updated refs
               if (!steps[i + 1]?.cmd.includes("snapshot")) {
@@ -351,11 +376,22 @@ export async function GET(req: Request) {
                 const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
                 lastSnapshotOutput = verifyOutput;
                 send("snapshot", { index: i, output: verifyOutput.slice(0, 1500) });
-                await new Promise(r => setTimeout(r, 500));
+                await new Promise(r => setTimeout(r, 2000));
               }
+            } else if (cmd.includes("snapshot")) {
+              // Wait after snapshot to allow page state to settle
+              send("step", { type: "info", desc: `Processing snapshot (2s)...` });
+              await new Promise(r => setTimeout(r, 2000));
+            } else if (cmd.includes("wait")) {
+              // Extract wait time from command like "agent-browser wait 3000"
+              const waitMatch = cmd.match(/wait\s+(\d+)/);
+              const waitTime = waitMatch ? parseInt(waitMatch[1]) : 2000;
+              send("step", { type: "info", desc: `Waiting ${waitTime}ms as requested...` });
+              await new Promise(r => setTimeout(r, waitTime));
             } else {
               // Standard delay between steps
-              await new Promise(r => setTimeout(r, 1000));
+              send("step", { type: "info", desc: `Waiting before next step (2s)...` });
+              await new Promise(r => setTimeout(r, 2000));
             }
 
             // Mark step as complete
