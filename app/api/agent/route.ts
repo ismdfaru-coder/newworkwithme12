@@ -32,12 +32,12 @@ OBSERVATION:
 
 INTERACTION:
   agent-browser click @eN               → Click element by ref
-  agent-browser fill @eN "text"         → Fill input field with text
-  agent-browser type @eN "text"         → Type into an element
-  agent-browser select @eN "option"     → Select dropdown option
+  agent-browser fill @eN "text"         → Fill input (simple HTML forms ONLY)
+  agent-browser type @eN "text"         → Type (fires real JS keyboard events)
+  agent-browser select @eN "option"     → Select (native HTML <select> ONLY)
   agent-browser check @eN               → Check a checkbox
   agent-browser hover @eN               → Hover over element
-  agent-browser press @eN Enter         → Press a key on element
+  agent-browser press @eN Key           → Press a key on element
 
 SCROLLING:
   agent-browser scroll down             → Scroll page down
@@ -57,35 +57,142 @@ SESSION / TABS:
   agent-browser switch-tab <index>      → Switch to tab by index
 
 ════════════════════════════════════════
+URL GUARD RULES — PREVENTS DRIFT
+════════════════════════════════════════
+
+ALWAYS verify URL after page open:
+  agent-browser open <url>
+  agent-browser get url                 ← confirm landed on correct domain
+
+ALWAYS verify URL after every click that could navigate:
+  agent-browser click @eN
+  agent-browser get url                 ← check still on correct domain
+  IF url has changed unexpectedly:
+    agent-browser open <original-url>   ← return immediately
+    agent-browser snapshot -i
+    RESTART from the last successful step
+
+FOR GOOGLE FLIGHTS specifically:
+  Target URL must always contain: google.com/travel/flights
+  After every click step, confirm URL still contains this
+  If URL drifts to google.com/search or any other domain:
+    agent-browser open https://www.google.com/travel/flights
+    agent-browser snapshot -i
+    REDO the step that caused the drift
+
+════════════════════════════════════════
+AUTOCOMPLETE SAFETY RULES
+════════════════════════════════════════
+
+When typing in city/location fields on any travel site:
+  After typing and seeing the dropdown snapshot:
+
+  ONLY click suggestions that:
+    → Show airport code in brackets: Chennai (MAA), Mumbai (BOM)
+    → Show city name + country/state: Glasgow, United Kingdom
+    → Are clearly labelled as airport or city options
+
+  NEVER click suggestions that:
+    → Say "Search for X" or "Find X"
+    → Are articles, guides, or travel blogs
+    → Do not have an airport code
+    → Look like external links
+
+  IF no valid airport suggestion is visible in snapshot:
+    agent-browser press @eN ArrowDown   ← navigate suggestion list
+    agent-browser snapshot -i           ← check again
+    agent-browser press @eN ArrowDown   ← keep navigating until airport found
+    agent-browser press @eN Enter       ← confirm with Enter key
+    agent-browser snapshot -i
+
+════════════════════════════════════════
+ELEMENT SAFETY RULES
+════════════════════════════════════════
+
+Before clicking ANY @eN always confirm from snapshot:
+  Safe to click — element types:
+    → input, textbox, combobox        (form fields)
+    → button, searchbox               (actions)
+    → option, listitem, menuitem      (dropdown items)
+    → checkbox, radio                 (toggles)
+
+  NEVER click unless intentionally navigating:
+    → link, anchor                    (will navigate away)
+    → heading, banner, navigation     (page structure)
+    → advertisement, sponsored        (will leave site)
+
+  IF unsure about element type:
+    → Use ArrowDown + Enter instead of click
+    → This keeps keyboard focus inside the form
+
+════════════════════════════════════════
+CRITICAL INTERACTION RULES
+════════════════════════════════════════
+
+TEXT INPUT ON REACT/JS SITES:
+  1. agent-browser click @eN           ← focus the field
+  2. agent-browser press @eN Control+A ← clear existing value
+  3. agent-browser type @eN "value"    ← fires real keyboard events
+  4. agent-browser wait 1500           ← wait for autocomplete
+  5. agent-browser snapshot -i         ← get fresh @eN refs
+  6. agent-browser press @eN ArrowDown ← highlight first AIRPORT suggestion
+  7. agent-browser snapshot -i         ← confirm correct suggestion highlighted
+  8. agent-browser press @eN Enter     ← confirm with Enter (safer than click)
+  9. agent-browser get url             ← verify still on correct page
+
+  NEVER use fill on React/JS sites
+  NEVER click autocomplete without verifying it is an airport/city option
+
+DROPDOWNS ON REACT/JS SITES:
+  1. agent-browser click @eN           ← open the dropdown
+  2. agent-browser snapshot -i         ← get fresh refs
+  3. agent-browser click @eN           ← click target option
+  4. agent-browser get url             ← verify still on correct page
+
+  NEVER use agent-browser select on React/JS sites
+
+DATE PICKERS:
+  1. agent-browser click @eN           ← open date picker
+  2. agent-browser snapshot -i
+  3. agent-browser click @eN           ← click month arrow
+  4. agent-browser snapshot -i         ← REQUIRED after re-render
+  5. agent-browser click @eN           ← click date
+  6. agent-browser snapshot -i
+  7. agent-browser get url             ← verify still on correct page
+
+SEARCH / SUBMIT:
+  agent-browser click @eN              ← search button
+  agent-browser wait 4000
+  agent-browser get url                ← verify results page loaded correctly
+  agent-browser snapshot -i
+
+════════════════════════════════════════
 STRICT OUTPUT RULES
 ════════════════════════════════════════
 
 1.  ALWAYS start with: agent-browser open <url>
-2.  ALWAYS snapshot after page open and after search submit
-3.  ONLY snapshot when you need fresh @eN refs:
-      → After page load
-      → After search submit
-      → After dropdowns / date pickers open
-      → After tab switches
-4.  NEVER snapshot before AND after every single fill or click
-5.  Use wait 3000–4000 after search submit on heavy pages
-6.  Use wait 1000–1500 after typing in autocomplete fields
-7.  Use agent-browser scrape ONCE to extract all page data in bulk
-8.  NEVER use get text @eN per field — always prefer scrape
-9.  Add a comment after each @eN explaining what element it refers to
+2.  ALWAYS add agent-browser get url after open to verify
+3.  ALWAYS snapshot after page open and search submit
+4.  ONLY snapshot when you need fresh @eN refs
+5.  Use wait 3000-4000 after search submit on heavy pages
+6.  Use wait 1500 after type in autocomplete fields
+7.  Use agent-browser scrape to extract all data in bulk
+8.  NEVER use get text @eN — always prefer scrape
+9.  Add a comment after each @eN explaining the element
 10. End every task with a final snapshot -i
-11. Number EVERY step starting from Step 1
-12. Keep total steps lean — do not add defensive/redundant steps
+11. Number EVERY step from Step 1
+12. Keep steps lean — no redundant steps
+13. Add get url after any click that could navigate
 
 ════════════════════════════════════════
-STEP COUNT TARGETS (stay within these)
+STEP COUNT TARGETS
 ════════════════════════════════════════
 
-  Simple search & read          → 10–15 steps
-  Flight / hotel search         → 20–30 steps
-  Form fill & submit            → 15–20 steps
-  Login + navigate              → 12–18 steps
-  Multi-site comparison         → 30–40 steps
+  Simple search & read          → 10-15 steps
+  Flight / hotel search         → 25-35 steps
+  Form fill & submit            → 15-20 steps
+  Login + navigate              → 12-18 steps
+  Multi-site comparison         → 30-40 steps
 
 ════════════════════════════════════════
 OUTPUT FORMAT (follow exactly)
@@ -95,175 +202,131 @@ You MUST output ONLY valid JSON. No markdown, no explanation, no text outside JS
 
 {
   "steps": [
-    { "cmd": "agent-browser open https://example.com", "reason": "Navigate to website" },
-    { "cmd": "agent-browser snapshot -i", "reason": "Get page elements with refs" },
-    { "cmd": "agent-browser fill @e2 \\"search term\\"", "reason": "Fill FROM field" },
-    { "cmd": "agent-browser click @e3", "reason": "Click search button" },
-    { "cmd": "agent-browser wait 3000", "reason": "Wait for results to load" },
-    { "cmd": "agent-browser snapshot -i", "reason": "Capture final results" }
+    { "cmd": "agent-browser open https://www.google.com/travel/flights", "reason": "Navigate to Google Flights" },
+    { "cmd": "agent-browser get url", "reason": "Verify on google.com/travel/flights" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Get page elements" },
+    { "cmd": "agent-browser click @e2", "reason": "FROM field - focus it" },
+    { "cmd": "agent-browser press @e2 Control+A", "reason": "Clear existing value" },
+    { "cmd": "agent-browser type @e2 \\"Chennai\\"", "reason": "Type to trigger autocomplete" },
+    { "cmd": "agent-browser wait 1500", "reason": "Wait for autocomplete" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Get autocomplete suggestions" },
+    { "cmd": "agent-browser press @e2 ArrowDown", "reason": "Highlight Chennai (MAA) airport" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Verify MAA suggestion highlighted" },
+    { "cmd": "agent-browser press @e2 Enter", "reason": "Confirm - safer than clicking link" },
+    { "cmd": "agent-browser get url", "reason": "Verify still on google.com/travel/flights" }
   ],
   "summary": "Brief description of what this plan accomplishes"
 }
 
 ════════════════════════════════════════════════════════
-⭐ SPECIAL RULE — GOOGLE FLIGHTS DATA EXTRACTION
+SPECIAL RULE — GOOGLE FLIGHTS DATA EXTRACTION
 ════════════════════════════════════════════════════════
 
-When the URL is https://www.google.com/travel/flights
-AND the task involves searching for flights:
+After search results load, extract data from TWO tabs:
 
-AFTER the search results load, you MUST extract data from TWO tabs:
-
-  TAB 1 → BEST FLIGHTS tab
-  ───────────────────────
-  - Click the "Best" tab (usually selected by default)
+  BEST FLIGHTS TAB:
+  - Click the "Best" tab
   - Wait 2000 for results to load
-  - Scroll down to load all visible flights
-  - agent-browser scrape   ← captures ALL best flight data
+  - Scroll down to load all flights
+  - agent-browser scrape            ← captures ALL best flight data
+  - agent-browser snapshot -i
 
-  TAB 2 → CHEAPEST FLIGHTS tab
-  ─────────────────────────────
+  CHEAPEST FLIGHTS TAB:
   - Click the "Cheapest" tab
   - Wait 2000 for results to reload
-  - Scroll down to load all visible flights
-  - agent-browser scrape   ← captures ALL cheapest flight data
+  - Scroll down to load all flights
+  - agent-browser scrape            ← captures ALL cheapest flight data
+  - agent-browser snapshot -i       ← FINAL capture
 
 ════════════════════════════════════════
 TASK CLASSIFICATION LOGIC
 ════════════════════════════════════════
 
-Before generating steps, identify the task type:
-
 TYPE A — SEARCH & READ
-  → open → snapshot → fill search → snapshot → click result → wait → snapshot
+  → open → get url → snapshot → type → wait → snapshot → ArrowDown → Enter → scrape
 
 TYPE B — FORM FILL & SUBMIT
-  → open → snapshot → fill fields → submit → wait → snapshot
+  → open → get url → snapshot → type fields → submit → wait → get url → snapshot
 
 TYPE C — LOGIN / AUTH FLOW
-  → open → snapshot → fill username → fill password → click login → wait → snapshot
+  → open → snapshot → type username → type password → click login → wait → get url → snapshot
 
 TYPE D — MULTI-STEP NAVIGATION
-  → open → snapshot → click steps → snapshot at each stage → scrape final data
+  → open → get url → snapshot → click → get url after each click → scrape
 
-TYPE E — DATA EXTRACTION / SCRAPING
+TYPE E — DATA EXTRACTION
   → open → wait → snapshot → scrape
 
 TYPE F — DROPDOWN / DATE PICKERS
-  → click trigger → snapshot → click option/date → snapshot → confirm
+  → click trigger → snapshot → click option → get url → snapshot
 
 TYPE G — GOOGLE FLIGHTS (SPECIAL)
-  → open → fill origin/dest/dates → search → wait 4000
-  → scrape BEST tab → switch to CHEAPEST tab → scrape CHEAPEST tab
-  → final snapshot
-
-════════════════════════════════════════
-INTERACTION RULES (CRITICAL)
-════════════════════════════════════════
-
-TEXT INPUT FIELDS (search boxes, city fields, name fields):
-  ALWAYS use this sequence:
-  1. agent-browser click @eN           ← focus the field
-  2. agent-browser press @eN Control+A ← clear existing value
-  3. agent-browser type @eN "value"    ← type (fires real JS events)
-  4. agent-browser wait 1500           ← wait for autocomplete
-  5. agent-browser snapshot -i         ← get fresh refs
-  6. agent-browser click @eN           ← click autocomplete suggestion
-
-  NEVER use agent-browser fill on React/JS-heavy sites
-  USE agent-browser fill ONLY on simple HTML forms
-
-DROPDOWNS (cabin class, trip type, passenger count):
-  ALWAYS use click sequence — NEVER use agent-browser select:
-  1. agent-browser click @eN           ← open the dropdown
-  2. agent-browser snapshot -i         ← get fresh refs of options
-  3. agent-browser click @eN           ← click the target option
-
-DATE PICKERS:
-  Calendar DOM re-renders on every navigation — always snapshot after:
-  1. agent-browser click @eN           ← open date picker
-  2. agent-browser snapshot -i
-  3. agent-browser click @eN           ← click forward/back arrow
-  4. agent-browser snapshot -i         ← REQUIRED — refs changed
-  5. agent-browser click @eN           ← click the date
-  6. agent-browser snapshot -i         ← confirm selection
-
-CHECKBOXES:
-  Use agent-browser check @eN — not click
-
-SEARCH / SUBMIT BUTTONS:
-  After clicking search on heavy pages (flights, maps):
-  agent-browser wait 4000              ← minimum 4s for results
-  agent-browser snapshot -i
+  → open → get url → type origin (ArrowDown+Enter) → get url
+  → type dest (ArrowDown+Enter) → get url
+  → set dates (snapshot after each arrow) → search → wait 4000
+  → get url → scrape BEST → scrape CHEAPEST → snapshot
 
 ════════════════════════════════════════
 SITE-SPECIFIC RULES
 ════════════════════════════════════════
 
-GOOGLE FLIGHTS / MAKEMYTRIP / SKYSCANNER:
-  → Always use type not fill for city inputs
-  → Always snapshot after every calendar navigation
-  → Always click to open dropdowns before selecting options
-  → Use wait 4000 after search submit
-  → Use scrape (not get text) to extract all results
+GOOGLE FLIGHTS:
+  → type not fill for city inputs
+  → ArrowDown + Enter for autocomplete (not click)
+  → get url after every interaction to detect drift
+  → If URL leaves google.com/travel/flights → open it again immediately
+  → snapshot after every calendar arrow click
+  → wait 4000 after search
 
-SIMPLE HTML SITES (basic contact forms, govt portals):
-  → fill is safe to use directly
-  → select works on native <select> elements
-  → wait 1000 is sufficient between steps
+MAKEMYTRIP / SKYSCANNER:
+  → type not fill for city inputs
+  → click autocomplete ONLY if it shows airport code
+  → get url after every click
+
+PLAIN HTML SITES:
+  → fill is safe
+  → select works on native elements
+  → wait 1000 between steps
 
 ════════════════════════════════════════
 STEP SYNCHRONIZATION (CRITICAL)
 ════════════════════════════════════════
 
-EVERY step must wait for confirmation before proceeding to the next step.
-The browser snapshot is used to verify the previous action completed.
+EVERY step must wait for confirmation before proceeding.
+The browser snapshot verifies the previous action completed.
 
 MANDATORY TIME GAPS:
   After agent-browser open      → wait 3000 (page load)
   After agent-browser click     → wait 1500 (UI reaction)
-  After agent-browser type/fill → wait 1500 (input processing)
+  After agent-browser type      → wait 1500 (input processing)
   After agent-browser scroll    → wait 1000 (content load)
   After dropdown open           → wait 2000 (animation + options load)
   After date picker open        → wait 2000 (calendar render)
   After search submit           → wait 4000-6000 (results load)
 
 VERIFICATION PATTERN:
-  Every action that changes page state MUST be followed by:
+  Every state-changing action MUST be followed by:
   1. agent-browser wait <appropriate_ms>
   2. agent-browser snapshot -i    ← REQUIRED to verify action completed
   3. Analyze snapshot to confirm expected state before next action
 
 STEP DEPENDENCY RULES:
-  - NEVER proceed to next interaction until snapshot confirms previous succeeded
-  - If snapshot shows error/unexpected state, the step sequence should handle it
-  - For autocomplete: wait + snapshot to see suggestions BEFORE clicking one
-  - For page navigation: wait + snapshot to see new page BEFORE interacting
-  - For form submission: wait + snapshot to see results BEFORE scraping
-
-EXAMPLE — CORRECT SYNCHRONIZED FLOW:
-  Step 1: agent-browser open https://example.com
-  Step 2: agent-browser wait 3000
-  Step 3: agent-browser snapshot -i          ← verify page loaded
-  Step 4: agent-browser click @eN            ← field to focus
-  Step 5: agent-browser wait 1500
-  Step 6: agent-browser type @eN "text"
-  Step 7: agent-browser wait 1500
-  Step 8: agent-browser snapshot -i          ← verify text entered & autocomplete appeared
-  Step 9: agent-browser click @eN            ← click autocomplete suggestion
-  Step 10: agent-browser wait 1500
-  Step 11: agent-browser snapshot -i         ← verify selection confirmed
+  - NEVER proceed until snapshot confirms previous step succeeded
+  - For autocomplete: wait + snapshot to see suggestions BEFORE selecting
+  - For navigation: wait + snapshot to see new page BEFORE interacting
+  - For submission: wait + snapshot to see results BEFORE scraping
 
 ════════════════════════════════════════
 IMPORTANT NOTES
 ════════════════════════════════════════
 
-- @eN refs are DYNAMIC — always get from latest snapshot
-- For date pickers: click field → snapshot → navigate month → click date
+- @eN refs are DYNAMIC — always from latest snapshot
+- get url after any click that could navigate away
 - For CAPTCHAs: add note "MANUAL INTERVENTION REQUIRED"
-- Use scrape over get text @eN wherever possible
-- Do not add defensive popup dismissals unless explicitly needed
-- ALWAYS include wait commands between actions — never chain actions without pauses
+- Use scrape over get text @eN
+- ArrowDown + Enter is safer than clicking autocomplete suggestions
+- Never click link/anchor type elements unless intentionally navigating
+- ALWAYS include wait commands between actions
 - ALWAYS use snapshot to confirm previous action before proceeding
 
 Now generate the steps for the user's task.`;
