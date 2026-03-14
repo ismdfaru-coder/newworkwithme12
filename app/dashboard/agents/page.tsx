@@ -48,6 +48,14 @@ interface PlanStep {
   reason: string
 }
 
+interface FirecrawlSession {
+  sessionId: string
+  liveViewUrl: string
+  interactiveLiveViewUrl: string
+  cdpUrl?: string
+  expiresAt?: string
+}
+
 interface Message {
   id: string
   role: "user" | "assistant"
@@ -60,6 +68,9 @@ interface Message {
   slides?: Slide[]
   plan?: PlanStep[]
   keyplex_raw?: string
+  keyplex_parsed?: { steps: PlanStep[]; summary: string }
+  firecrawl_session?: FirecrawlSession
+  currentStep?: { index: number; total: number; cmd: string; reason: string }
 }
 
 interface TaskStep {
@@ -295,6 +306,25 @@ export default function AgentsPage() {
         ));
       });
 
+      // Show Firecrawl session info separately
+      eventSource.addEventListener("firecrawl_session", (e) => {
+        const data = JSON.parse(e.data);
+        setMessages(prev => prev.map(m => 
+          m.id === assistantMessageId 
+            ? { 
+                ...m, 
+                firecrawl_session: {
+                  sessionId: data.sessionId,
+                  liveViewUrl: data.liveViewUrl,
+                  interactiveLiveViewUrl: data.interactiveLiveViewUrl,
+                  cdpUrl: data.cdpUrl,
+                  expiresAt: data.expiresAt
+                },
+              }
+            : m
+        ));
+      });
+
       // Show raw Keyplex API response first
       eventSource.addEventListener("keyplex_response", (e) => {
         const data = JSON.parse(e.data);
@@ -302,8 +332,13 @@ export default function AgentsPage() {
           m.id === assistantMessageId 
             ? { 
                 ...m, 
-                content: `Keyplex API Response:\n\n${data.raw}`,
+                content: `══════════════════════════════════════════════════════════════
+                 KEYPLEX INSTRUCTION (AI Planner Response)
+══════════════════════════════════════════════════════════════
+
+${data.raw}`,
                 keyplex_raw: data.raw,
+                keyplex_parsed: data.parsed,
                 status: "processing",
               }
             : m
@@ -325,9 +360,23 @@ export default function AgentsPage() {
           m.id === assistantMessageId 
             ? { 
                 ...m, 
-                // Keep keyplex_raw in content, add execution status below
+                // Keep keyplex_raw in content, add browsing steps section
                 content: m.keyplex_raw 
-                  ? `Keyplex API Response:\n\n${m.keyplex_raw}\n\n---\n\nExecuting plan: ${data.total} steps\n${data.summary}`
+                  ? `══════════════════════════════════════════════════════════════
+                 KEYPLEX INSTRUCTION (AI Planner Response)
+══════════════════════════════════════════════════════════════
+
+${m.keyplex_raw}
+
+══════════════════════════════════════════════════════════════
+                 BROWSING STEP TASKS (Execution Plan)
+══════════════════════════════════════════════════════════════
+
+Total Steps: ${data.total}
+Summary: ${data.summary}
+
+Steps to execute:
+${data.steps.map((s: { index: number; cmd: string; reason: string }) => `  ${s.index + 1}. ${s.cmd} → ${s.reason}`).join('\n')}`
                   : `Executing plan: ${data.total} steps\n\n${data.summary}`,
                 plan: data.steps, // Store the plan for reference
                 steps: planSteps,
@@ -344,9 +393,7 @@ export default function AgentsPage() {
             ? { 
                 ...m, 
                 // Keep keyplex_raw visible, update execution status
-                content: m.keyplex_raw 
-                  ? `Keyplex API Response:\n\n${m.keyplex_raw}\n\n---\n\nExecuting Step ${data.index + 1}/${data.total}: ${data.reason}`
-                  : `Executing Step ${data.index + 1}/${data.total}: ${data.reason}`,
+                currentStep: { index: data.index, total: data.total, cmd: data.cmd, reason: data.reason },
                 steps: (m.steps || []).map((step, idx) => 
                   idx === data.index 
                     ? { ...step, type: "browsing" as const, description: `Step ${data.index + 1}: ${data.reason}\nExecuting: ${data.cmd}` }
@@ -1379,13 +1426,53 @@ export default function AgentsPage() {
                       </div>
                     )}
 
+                    {/* Firecrawl Session Info */}
+                    {message.firecrawl_session && (
+                      <div className="mb-4 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className="h-2 w-2 rounded-full bg-cyan-500 animate-pulse" />
+                          <span className="text-xs font-semibold text-cyan-600 dark:text-cyan-400 uppercase tracking-wide">
+                            Firecrawl Browser Session
+                          </span>
+                        </div>
+                        <div className="space-y-1 font-mono text-xs">
+                          <div className="flex gap-2">
+                            <span className="text-muted-foreground">Session ID:</span>
+                            <span className="text-cyan-600 dark:text-cyan-400 font-medium">{message.firecrawl_session.sessionId}</span>
+                          </div>
+                          {message.firecrawl_session.expiresAt && (
+                            <div className="flex gap-2">
+                              <span className="text-muted-foreground">Expires:</span>
+                              <span className="text-foreground">{new Date(message.firecrawl_session.expiresAt).toLocaleTimeString()}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Current Step Progress */}
+                    {message.currentStep && (
+                      <div className="mb-4 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+                          <span className="text-xs font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wide">
+                            Executing Step {message.currentStep.index + 1}/{message.currentStep.total}
+                          </span>
+                        </div>
+                        <div className="font-mono text-xs text-muted-foreground">
+                          <div className="text-foreground mb-1">{message.currentStep.reason}</div>
+                          <code className="text-blue-600 dark:text-blue-400">{message.currentStep.cmd}</code>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Message Content */}
                     {message.content && (
                       <div className={cn(
                         "prose prose-sm dark:prose-invert max-w-none",
                         message.status === "error" && "text-destructive"
                       )}>
-                        <p className="whitespace-pre-wrap">{message.content}</p>
+                        <pre className="whitespace-pre-wrap text-sm font-mono bg-muted/50 p-4 rounded-lg overflow-x-auto">{message.content}</pre>
                       </div>
                     )}
 

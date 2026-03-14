@@ -62,30 +62,71 @@ async function getAllSteps(
         role: "system",
         content: `You are a browser automation planner. Generate a COMPLETE sequence of commands to accomplish the given task.
 
-AVAILABLE COMMANDS:
-- agent-browser open <URL>           → Opens a webpage
-- agent-browser snapshot -i          → Returns list of page elements with [ref=eNN] identifiers  
-- agent-browser hover @eNN           → Moves mouse cursor to element (makes mouse visible)
-- agent-browser click @eNN           → Clicks element with that ref (e.g., @e5, @e16)
-- agent-browser fill @eNN "text"     → Types text into input field with that ref
-- agent-browser scroll down          → Scrolls the page down
-- agent-browser scroll up            → Scrolls the page up
+═══════════════════════════════════════════════════════════════════════
+                    FIRECRAWL agent-browser COMMANDS
+═══════════════════════════════════════════════════════════════════════
 
-IMPORTANT: Before clicking any element, ALWAYS use "hover" first to move the mouse cursor to the element. This makes the mouse movement visible in the browser.
+NAVIGATION:
+- agent-browser open <URL>              → Navigate to webpage (auto-prepends https://)
+- agent-browser back                    → Go back in history
+- agent-browser forward                 → Go forward in history  
+- agent-browser reload                  → Reload current page
+- agent-browser close                   → Close browser
 
-PLANNING RULES:
-1. Start with "agent-browser open <URL>" for the relevant website
-2. After "open", include "agent-browser snapshot -i" to see the page
-3. Use placeholder refs like @e1, @e2, etc. - these will be matched to actual elements during execution
-4. For form filling, use descriptive placeholders that can be matched: @input_search, @input_from, @input_to, @button_submit
-5. Include snapshot commands after key actions to see results
-6. Plan for common UI patterns (search boxes, buttons, links)
+SNAPSHOT (use to see page elements):
+- agent-browser snapshot -i             → Get interactive elements with refs (@e1, @e2, etc.) [RECOMMENDED]
+- agent-browser snapshot                → Full accessibility tree
+- agent-browser snapshot -c             → Compact output
+
+INTERACTION (use @refs from snapshot):
+- agent-browser click @eNN              → Click element (e.g., @e5, @e16)
+- agent-browser click @eNN --new-tab    → Click and open in new tab
+- agent-browser dblclick @eNN           → Double-click element
+- agent-browser fill @eNN "text"        → Clear field and type text
+- agent-browser type @eNN "text"        → Type without clearing
+- agent-browser press <key>             → Press key (Enter, Tab, Escape, Control+a)
+- agent-browser hover @eNN              → Hover over element
+- agent-browser select @eNN "value"     → Select dropdown option
+- agent-browser check @eNN              → Check checkbox
+- agent-browser uncheck @eNN            → Uncheck checkbox
+- agent-browser scroll down 300         → Scroll page down (default 300px)
+- agent-browser scroll up 300           → Scroll page up
+- agent-browser scrollintoview @eNN     → Scroll element into view
+
+MOUSE CONTROL (for visible cursor movement):
+- agent-browser mouse move X Y          → Move mouse to coordinates (MAKES CURSOR VISIBLE)
+- agent-browser mouse down left         → Press left mouse button
+- agent-browser mouse up left           → Release left mouse button
+
+GET INFORMATION:
+- agent-browser get text @eNN           → Get element text content
+- agent-browser get url                 → Get current page URL
+- agent-browser get title               → Get page title
+
+WAIT:
+- agent-browser wait @eNN               → Wait for element to appear
+- agent-browser wait --load networkidle → Wait for network to be idle
+
+═══════════════════════════════════════════════════════════════════════
+                         PLANNING RULES
+═══════════════════════════════════════════════════════════════════════
+
+1. ALWAYS start with: "agent-browser open <URL>"
+2. ALWAYS follow open with: "agent-browser snapshot -i" to see page elements
+3. Use @refs from snapshot output (e.g., @e1, @e5, @e16) for interactions
+4. For form filling, use descriptive placeholders: @input_search, @input_email, @button_submit
+5. ALWAYS re-snapshot after navigation or DOM changes to get fresh refs
+6. For visible mouse movement, use "agent-browser mouse move X Y" before clicking
+7. Include "agent-browser wait --load networkidle" after page loads for dynamic content
+
+CORRECT WORKFLOW:
+1. Navigate → 2. Snapshot → 3. Interact (with refs) → 4. Re-snapshot if page changed
 
 OUTPUT FORMAT (JSON only, no markdown):
 {
   "steps": [
     { "cmd": "agent-browser open https://example.com", "reason": "Navigate to the website" },
-    { "cmd": "agent-browser snapshot -i", "reason": "Get page elements" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Get interactive elements with refs" },
     { "cmd": "agent-browser fill @input_search \\"search term\\"", "reason": "Enter search query" },
     { "cmd": "agent-browser click @button_submit", "reason": "Submit the search" },
     { "cmd": "agent-browser snapshot -i", "reason": "View search results" }
@@ -215,6 +256,9 @@ export async function GET(req: Request) {
 
         const session = await createSession(FIRECRAWL_API_KEY);
         
+        // Log full session response for debugging
+        console.log("[v0] Firecrawl session response:", JSON.stringify(session, null, 2));
+        
         // Firecrawl returns { success: true, id: "...", liveViewUrl: "..." } on success
         // OR { success: false, error: "..." } on failure
         // OR just { id: "...", liveViewUrl: "..." } without success field
@@ -227,6 +271,9 @@ export async function GET(req: Request) {
         }
 
         sessionId = session.id;
+        console.log("[v0] Session ID created:", sessionId);
+        console.log("[v0] Live View URL:", session.liveViewUrl);
+        console.log("[v0] Interactive Live View URL:", session.interactiveLiveViewUrl);
 
         // Send liveViewUrl immediately so iframe appears in UI
         send("session", {
@@ -236,6 +283,15 @@ export async function GET(req: Request) {
         });
 
         send("step", { type: "success", desc: `Session created. ID: ${session.id}` });
+        
+        // Emit session ID separately for clear visibility
+        send("firecrawl_session", {
+          sessionId: session.id,
+          liveViewUrl: session.liveViewUrl,
+          interactiveLiveViewUrl: session.interactiveLiveViewUrl,
+          cdpUrl: session.cdpUrl,
+          expiresAt: session.expiresAt
+        });
 
         // ── 2. Get ALL steps from Keyplex in ONE API call ──────────────────
         // Then execute them locally without repeated API calls
