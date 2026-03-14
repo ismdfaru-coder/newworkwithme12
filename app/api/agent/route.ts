@@ -213,14 +213,58 @@ SIMPLE HTML SITES (basic contact forms, govt portals):
   → wait 1000 is sufficient between steps
 
 ════════════════════════════════════════
+STEP SYNCHRONIZATION (CRITICAL)
+════════════════════════════════════════
+
+EVERY step must wait for confirmation before proceeding to the next step.
+The browser snapshot is used to verify the previous action completed.
+
+MANDATORY TIME GAPS:
+  After agent-browser open      → wait 3000 (page load)
+  After agent-browser click     → wait 1500 (UI reaction)
+  After agent-browser type/fill → wait 1500 (input processing)
+  After agent-browser scroll    → wait 1000 (content load)
+  After dropdown open           → wait 2000 (animation + options load)
+  After date picker open        → wait 2000 (calendar render)
+  After search submit           → wait 4000-6000 (results load)
+
+VERIFICATION PATTERN:
+  Every action that changes page state MUST be followed by:
+  1. agent-browser wait <appropriate_ms>
+  2. agent-browser snapshot -i    ← REQUIRED to verify action completed
+  3. Analyze snapshot to confirm expected state before next action
+
+STEP DEPENDENCY RULES:
+  - NEVER proceed to next interaction until snapshot confirms previous succeeded
+  - If snapshot shows error/unexpected state, the step sequence should handle it
+  - For autocomplete: wait + snapshot to see suggestions BEFORE clicking one
+  - For page navigation: wait + snapshot to see new page BEFORE interacting
+  - For form submission: wait + snapshot to see results BEFORE scraping
+
+EXAMPLE — CORRECT SYNCHRONIZED FLOW:
+  Step 1: agent-browser open https://example.com
+  Step 2: agent-browser wait 3000
+  Step 3: agent-browser snapshot -i          ← verify page loaded
+  Step 4: agent-browser click @eN            ← field to focus
+  Step 5: agent-browser wait 1500
+  Step 6: agent-browser type @eN "text"
+  Step 7: agent-browser wait 1500
+  Step 8: agent-browser snapshot -i          ← verify text entered & autocomplete appeared
+  Step 9: agent-browser click @eN            ← click autocomplete suggestion
+  Step 10: agent-browser wait 1500
+  Step 11: agent-browser snapshot -i         ← verify selection confirmed
+
+════════════════════════════════════════
 IMPORTANT NOTES
 ════════════════════════════════════════
 
 - @eN refs are DYNAMIC — always get from latest snapshot
 - For date pickers: click field → snapshot → navigate month → click date
-- For CAPTCHAs: add note "⚠️ MANUAL INTERVENTION REQUIRED"
+- For CAPTCHAs: add note "MANUAL INTERVENTION REQUIRED"
 - Use scrape over get text @eN wherever possible
 - Do not add defensive popup dismissals unless explicitly needed
+- ALWAYS include wait commands between actions — never chain actions without pauses
+- ALWAYS use snapshot to confirm previous action before proceeding
 
 Now generate the steps for the user's task.`;
 
@@ -526,26 +570,73 @@ export async function GET(req: Request) {
               lastSnapshotOutput = output;
             }
 
-            // Wait for browser to complete the action with appropriate delays
+            // ── STEP SYNCHRONIZATION: Wait and verify before proceeding ──
+            const isWaitCmd = cmd.includes("wait ");
+            const isSnapshotCmd = cmd.includes("snapshot");
+            const isTypeCmd = cmd.includes("type ");
+            const isScrollCmd = cmd.includes("scroll ");
+            
             if (isOpenCmd) {
-              // Wait longer for page to fully load
-              send("step", { type: "info", desc: `Waiting for page to load...` });
+              // Wait for page to fully load
+              send("step", { type: "info", desc: `Waiting for page to load (3s)...` });
               await new Promise(r => setTimeout(r, 3000));
-            } else if (isClickCmd || isFillCmd) {
-              // Wait for click/fill action to complete
-              await new Promise(r => setTimeout(r, 1500));
               
-              // Auto-snapshot after click/fill to verify and get updated refs
+              // Auto-snapshot to verify page loaded and get fresh refs
               if (!steps[i + 1]?.cmd.includes("snapshot")) {
-                send("step", { type: "info", desc: `Taking verification snapshot...` });
+                send("step", { type: "info", desc: `Verifying page load with snapshot...` });
                 const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
                 const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
                 lastSnapshotOutput = verifyOutput;
-                send("snapshot", { index: i, output: verifyOutput.slice(0, 1500) });
+                send("snapshot", { index: i, output: verifyOutput.slice(0, 1500), verified: true });
                 await new Promise(r => setTimeout(r, 500));
               }
+            } else if (isClickCmd) {
+              // Wait for click action to complete and UI to react
+              send("step", { type: "info", desc: `Waiting for click action (1.5s)...` });
+              await new Promise(r => setTimeout(r, 1500));
+              
+              // Check if this is a dropdown/date picker trigger - wait longer
+              if (reason.toLowerCase().includes("dropdown") || reason.toLowerCase().includes("date") || reason.toLowerCase().includes("picker")) {
+                send("step", { type: "info", desc: `Extra wait for dropdown/picker animation (2s)...` });
+                await new Promise(r => setTimeout(r, 2000));
+              }
+              
+              // Auto-snapshot after click to verify and get updated refs
+              if (!steps[i + 1]?.cmd.includes("snapshot") && !steps[i + 1]?.cmd.includes("wait")) {
+                send("step", { type: "info", desc: `Verifying click result with snapshot...` });
+                const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
+                const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
+                lastSnapshotOutput = verifyOutput;
+                send("snapshot", { index: i, output: verifyOutput.slice(0, 1500), verified: true });
+                await new Promise(r => setTimeout(r, 500));
+              }
+            } else if (isFillCmd || isTypeCmd) {
+              // Wait for input processing and autocomplete
+              send("step", { type: "info", desc: `Waiting for input processing (1.5s)...` });
+              await new Promise(r => setTimeout(r, 1500));
+              
+              // Auto-snapshot to see autocomplete suggestions
+              if (!steps[i + 1]?.cmd.includes("snapshot") && !steps[i + 1]?.cmd.includes("wait")) {
+                send("step", { type: "info", desc: `Verifying input with snapshot (checking autocomplete)...` });
+                const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
+                const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
+                lastSnapshotOutput = verifyOutput;
+                send("snapshot", { index: i, output: verifyOutput.slice(0, 1500), verified: true });
+                await new Promise(r => setTimeout(r, 500));
+              }
+            } else if (isScrollCmd) {
+              // Wait for lazy-loaded content
+              send("step", { type: "info", desc: `Waiting for scroll content (1s)...` });
+              await new Promise(r => setTimeout(r, 1000));
+            } else if (isSnapshotCmd) {
+              // Snapshot completed - store the output for verification
+              send("step", { type: "info", desc: `Snapshot captured - analyzing page state...` });
+              await new Promise(r => setTimeout(r, 500));
+            } else if (isWaitCmd) {
+              // Wait command already executed - just a small buffer
+              await new Promise(r => setTimeout(r, 200));
             } else {
-              // Standard delay between steps
+              // Standard delay for other commands
               await new Promise(r => setTimeout(r, 1000));
             }
 
