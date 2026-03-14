@@ -7,6 +7,7 @@ export const maxDuration = 300;
 
 const FC_BASE = "https://api.firecrawl.dev";
 const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY || "fc-5d2cfe6d91f44adf9a20f4489eaa5e0d";
+const KEYPLEX_API_KEY = process.env.KEYPLEX_API_KEY || "kpx_9b732e1e407a0407815bf916c2a45980ce59697bc780cb1e3788ca980a88a23e";
 
 async function createSession(fcKey: string) {
   const res = await fetch(`${FC_BASE}/v2/browser`, {
@@ -60,63 +61,57 @@ async function getAllSteps(
     messages: [
       {
         role: "system",
-        content: `You are an expert browser automation planner. Generate a DETAILED and COMPLETE sequence of commands to fully accomplish the given task from start to finish.
+        content: `You are an expert browser automation agent for Firecrawl browser sandbox. Generate step-by-step commands to execute in the browser.
 
-AVAILABLE COMMANDS:
-- agent-browser open <URL>           → Opens a webpage (page takes time to load)
-- agent-browser snapshot -i          → Returns list of ALL page elements with [ref=eNN] identifiers  
-- agent-browser click @eNN           → Clicks element with that ref (e.g., @e5, @e16)
-- agent-browser fill @eNN "text"     → Types text into input field with that ref
+AVAILABLE COMMANDS (these are bash commands for agent-browser):
+- agent-browser open <URL>           → Opens a webpage
+- agent-browser snapshot -i          → Takes snapshot, returns page elements with [ref=eNN] identifiers  
+- agent-browser click @eNN           → Clicks element by ref (e.g., @e5, @e16, @e23)
+- agent-browser fill @eNN "text"     → Types text into input field by ref
 - agent-browser scroll down          → Scrolls down the page
 - agent-browser scroll up            → Scrolls up the page
-- agent-browser wait 2000            → Waits for specified milliseconds
 
-CRITICAL PLANNING RULES:
-1. ALWAYS start with "agent-browser open <URL>" for the target website
-2. ALWAYS follow "open" with "agent-browser snapshot -i" to discover page elements
-3. After EVERY click or fill action, add "agent-browser snapshot -i" to see the updated page state
-4. Use descriptive placeholder refs: @input_from, @input_to, @input_search, @input_date, @button_search, @button_submit, @link_first_result
-5. For flight/travel searches, include ALL required fields: origin, destination, dates, passenger count
-6. After search submission, wait and take snapshot to see results
-7. If selecting from results, click the appropriate result item
-8. Generate AT LEAST 10-15 steps for complex tasks like flight searches
-9. ALWAYS include final steps to verify the task is complete
+STRICT RULES:
+1. First command MUST be: agent-browser open <URL>
+2. Second command MUST be: agent-browser snapshot -i (to get element refs)
+3. After snapshot, use ACTUAL ref format like @e5, @e16, @e23 (the execution will auto-resolve these from snapshot)
+4. After EVERY fill or click, add: agent-browser snapshot -i
+5. Generate 15-25 steps for thorough task completion
+6. Each step must be atomic - one action only
 
-EXAMPLE FOR FLIGHT SEARCH:
+EXAMPLE - Flight Search from Chennai to Manchester:
 {
   "steps": [
-    { "cmd": "agent-browser open https://www.google.com/travel/flights", "reason": "Navigate to Google Flights" },
-    { "cmd": "agent-browser snapshot -i", "reason": "Discover page elements and input fields" },
-    { "cmd": "agent-browser click @input_from", "reason": "Click on departure city field" },
-    { "cmd": "agent-browser fill @input_from \\"Chennai\\"", "reason": "Enter departure city" },
+    { "cmd": "agent-browser open https://www.google.com/travel/flights", "reason": "Open Google Flights" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Get page element refs" },
+    { "cmd": "agent-browser click @e16", "reason": "Click departure field" },
+    { "cmd": "agent-browser snapshot -i", "reason": "See input state" },
+    { "cmd": "agent-browser fill @e16 \\"Chennai\\"", "reason": "Type departure city" },
+    { "cmd": "agent-browser snapshot -i", "reason": "See autocomplete dropdown" },
+    { "cmd": "agent-browser click @e25", "reason": "Select Chennai from suggestions" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Verify selection, see destination field" },
+    { "cmd": "agent-browser click @e18", "reason": "Click destination field" },
+    { "cmd": "agent-browser snapshot -i", "reason": "See destination input" },
+    { "cmd": "agent-browser fill @e18 \\"Manchester\\"", "reason": "Type destination city" },
     { "cmd": "agent-browser snapshot -i", "reason": "See autocomplete suggestions" },
-    { "cmd": "agent-browser click @suggestion_first", "reason": "Select first suggestion" },
-    { "cmd": "agent-browser snapshot -i", "reason": "Confirm selection and see destination field" },
-    { "cmd": "agent-browser click @input_to", "reason": "Click on destination field" },
-    { "cmd": "agent-browser fill @input_to \\"Manchester\\"", "reason": "Enter destination city" },
-    { "cmd": "agent-browser snapshot -i", "reason": "See autocomplete suggestions" },
-    { "cmd": "agent-browser click @suggestion_first", "reason": "Select first destination suggestion" },
-    { "cmd": "agent-browser snapshot -i", "reason": "See date picker or search options" },
-    { "cmd": "agent-browser click @button_search", "reason": "Click search/explore button" },
-    { "cmd": "agent-browser wait 3000", "reason": "Wait for flight results to load" },
-    { "cmd": "agent-browser snapshot -i", "reason": "View available flight options" },
-    { "cmd": "agent-browser scroll down", "reason": "Scroll to see more flight options" },
-    { "cmd": "agent-browser snapshot -i", "reason": "Capture final results" }
+    { "cmd": "agent-browser click @e30", "reason": "Select Manchester from suggestions" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Verify destination selected" },
+    { "cmd": "agent-browser click @e45", "reason": "Click Explore/Search button" },
+    { "cmd": "agent-browser snapshot -i", "reason": "View flight search results" },
+    { "cmd": "agent-browser scroll down", "reason": "Scroll to see more results" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Capture more flight options" }
   ],
-  "summary": "Complete flight search from Chennai to Manchester with result verification"
+  "summary": "Search flights from Chennai to Manchester on Google Flights"
 }
 
-OUTPUT FORMAT (JSON only, no markdown):
-{
-  "steps": [...],
-  "summary": "Detailed description of what this plan accomplishes"
-}`
+OUTPUT: Return ONLY valid JSON, no markdown:
+{"steps":[...],"summary":"..."}`
       },
       {
         role: "user",
         content: `TASK: ${task}
 
-Generate a COMPLETE and DETAILED sequence of browser commands (minimum 10-15 steps for complex tasks). Include snapshot commands after EVERY interaction to verify state. Do not skip any steps. The browser needs time between actions.`
+Generate browser automation commands. Start with open URL, then snapshot, then interact using @eNN refs. Include snapshot after every action.`
       }
     ],
   };
@@ -210,7 +205,7 @@ function resolveRef(cmd: string, snapshotOutput: string): string {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const query = searchParams.get("query") ?? "";
-  const kpKey = searchParams.get("keyplex_key") ?? process.env.KEYPLEX_API_KEY ?? "";
+  const kpKey = searchParams.get("keyplex_key") || KEYPLEX_API_KEY;
 
   if (!query) {
     return new Response(JSON.stringify({ error: "Missing query" }), { status: 400 });
