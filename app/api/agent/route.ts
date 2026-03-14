@@ -158,6 +158,61 @@ TYPE G — GOOGLE FLIGHTS (SPECIAL)
   → final snapshot
 
 ════════════════════════════════════════
+INTERACTION RULES (CRITICAL)
+════════════════════════════════════════
+
+TEXT INPUT FIELDS (search boxes, city fields, name fields):
+  ALWAYS use this sequence:
+  1. agent-browser click @eN           ← focus the field
+  2. agent-browser press @eN Control+A ← clear existing value
+  3. agent-browser type @eN "value"    ← type (fires real JS events)
+  4. agent-browser wait 1500           ← wait for autocomplete
+  5. agent-browser snapshot -i         ← get fresh refs
+  6. agent-browser click @eN           ← click autocomplete suggestion
+
+  NEVER use agent-browser fill on React/JS-heavy sites
+  USE agent-browser fill ONLY on simple HTML forms
+
+DROPDOWNS (cabin class, trip type, passenger count):
+  ALWAYS use click sequence — NEVER use agent-browser select:
+  1. agent-browser click @eN           ← open the dropdown
+  2. agent-browser snapshot -i         ← get fresh refs of options
+  3. agent-browser click @eN           ← click the target option
+
+DATE PICKERS:
+  Calendar DOM re-renders on every navigation — always snapshot after:
+  1. agent-browser click @eN           ← open date picker
+  2. agent-browser snapshot -i
+  3. agent-browser click @eN           ← click forward/back arrow
+  4. agent-browser snapshot -i         ← REQUIRED — refs changed
+  5. agent-browser click @eN           ← click the date
+  6. agent-browser snapshot -i         ← confirm selection
+
+CHECKBOXES:
+  Use agent-browser check @eN — not click
+
+SEARCH / SUBMIT BUTTONS:
+  After clicking search on heavy pages (flights, maps):
+  agent-browser wait 4000              ← minimum 4s for results
+  agent-browser snapshot -i
+
+════════════════════════════════════════
+SITE-SPECIFIC RULES
+════════════════════════════════════════
+
+GOOGLE FLIGHTS / MAKEMYTRIP / SKYSCANNER:
+  → Always use type not fill for city inputs
+  → Always snapshot after every calendar navigation
+  → Always click to open dropdowns before selecting options
+  → Use wait 4000 after search submit
+  → Use scrape (not get text) to extract all results
+
+SIMPLE HTML SITES (basic contact forms, govt portals):
+  → fill is safe to use directly
+  → select works on native <select> elements
+  → wait 1000 is sufficient between steps
+
+════════════════════════════════════════
 IMPORTANT NOTES
 ════════════════════════════════════════
 
