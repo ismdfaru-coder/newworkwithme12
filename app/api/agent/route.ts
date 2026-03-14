@@ -24,21 +24,33 @@ async function createSession(fcKey: string) {
 }
 
 async function execCommand(sessionId: string, command: string, fcKey: string) {
+  console.log("[v0] Executing command:", command);
+  console.log("[v0] Session ID:", sessionId);
+  
+  const requestBody = {
+    code: command,
+    language: "bash",
+  };
+  console.log("[v0] Request body:", JSON.stringify(requestBody));
+  
   const res = await fetch(`${FC_BASE}/v2/browser/${sessionId}/execute`, {
     method: "POST",
     headers: { Authorization: `Bearer ${fcKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      code: command,
-      language: "bash",
-    }),
+    body: JSON.stringify(requestBody),
   });
+  
+  console.log("[v0] Execute response status:", res.status);
   
   if (!res.ok) {
     const errText = await res.text();
+    console.log("[v0] Execute error:", errText);
     throw new Error(`Execute failed: ${res.status} - ${errText}`);
   }
   
-  return res.json();
+  const result = await res.json();
+  console.log("[v0] Execute result:", JSON.stringify(result, null, 2));
+  
+  return result;
 }
 
 async function deleteSession(sessionId: string, fcKey: string) {
@@ -232,11 +244,17 @@ function resolveRef(cmd: string, snapshotOutput: string): string {
 }
 
 export async function GET(req: Request) {
+  console.log("[v0] ===== Agent API Request Started =====");
   const { searchParams } = new URL(req.url);
   const query = searchParams.get("query") ?? "";
   const kpKey = searchParams.get("keyplex_key") ?? process.env.KEYPLEX_API_KEY ?? "";
+  
+  console.log("[v0] Query:", query);
+  console.log("[v0] Keyplex key present:", !!kpKey);
+  console.log("[v0] Keyplex key (first 10 chars):", kpKey.slice(0, 10) + "...");
 
   if (!query) {
+    console.log("[v0] ERROR: Missing query parameter");
     return new Response(JSON.stringify({ error: "Missing query" }), { status: 400 });
   }
 
@@ -297,6 +315,8 @@ export async function GET(req: Request) {
         // Then execute them locally without repeated API calls
 
         let lastSnapshotOutput = "";
+        console.log("[v0] Keyplex key present:", !!kpKey);
+        console.log("[v0] Starting step execution...");
 
         if (!kpKey) {
           // No LLM key — run a hardcoded demo for flight search
@@ -312,18 +332,26 @@ export async function GET(req: Request) {
             { cmd: `agent-browser snapshot -i`, reason: "View updated page" },
           ];
 
+          console.log("[v0] Running demo commands, total:", demoCmds.length);
           for (let i = 0; i < demoCmds.length; i++) {
             const { cmd, reason } = demoCmds[i];
+            console.log(`[v0] Demo step ${i + 1}/${demoCmds.length}:`, cmd);
             send("command", { index: i, total: demoCmds.length, cmd, reason });
 
-            const result = await execCommand(sessionId, cmd, FIRECRAWL_API_KEY);
-            const output = result.stdout || result.output || result.result || JSON.stringify(result);
-            const hasError = result.stderr && result.stderr.includes("✗");
+            try {
+              const result = await execCommand(sessionId, cmd, FIRECRAWL_API_KEY);
+              const output = result.stdout || result.output || result.result || JSON.stringify(result);
+              const hasError = result.stderr && result.stderr.includes("✗");
+              console.log(`[v0] Demo step ${i + 1} result:`, output.slice(0, 200));
 
-            send("result", { index: i, cmd, output: output.slice(0, 500), success: !hasError });
+              send("result", { index: i, cmd, output: output.slice(0, 500), success: !hasError });
 
-            if (cmd.includes("snapshot")) {
-              lastSnapshotOutput = output;
+              if (cmd.includes("snapshot")) {
+                lastSnapshotOutput = output;
+              }
+            } catch (cmdErr) {
+              console.log(`[v0] Demo step ${i + 1} error:`, cmdErr);
+              send("result", { index: i, cmd, output: String(cmdErr), success: false });
             }
 
             await new Promise(r => setTimeout(r, 800));
@@ -331,9 +359,12 @@ export async function GET(req: Request) {
 
         } else {
           // Call Keyplex API ONCE to get all steps
+          console.log("[v0] Calling Keyplex API for task plan...");
           send("step", { type: "info", desc: "Requesting task plan from Keyplex (single API call)..." });
 
           const { steps, summary, rawResponse } = await getAllSteps(query, kpKey);
+          console.log("[v0] Keyplex returned steps:", steps.length);
+          console.log("[v0] Keyplex summary:", summary);
 
           // ── PHASE 0: Show raw Keyplex API response first ──────────────────
           send("keyplex_response", { 
@@ -363,14 +394,17 @@ export async function GET(req: Request) {
           await new Promise(r => setTimeout(r, 2000));
 
           // ── PHASE 2: Execute steps one by one with verification ──────
+          console.log("[v0] PHASE 2: Starting execution of", steps.length, "steps");
           send("step", { type: "info", desc: "Starting execution..." });
 
           for (let i = 0; i < steps.length; i++) {
             let { cmd, reason } = steps[i];
+            console.log(`[v0] Step ${i + 1}/${steps.length}: ${cmd}`);
 
             // Resolve placeholder refs using last snapshot output
             if (lastSnapshotOutput && cmd.includes("@")) {
               cmd = resolveRef(cmd, lastSnapshotOutput);
+              console.log(`[v0] Resolved command: ${cmd}`);
             }
 
             // Notify which step is starting
@@ -380,49 +414,57 @@ export async function GET(req: Request) {
             const isOpenCmd = cmd.includes("open ");
             const isClickCmd = cmd.includes("click ");
             const isFillCmd = cmd.includes("fill ");
-            
+
             if (isOpenCmd) {
               await new Promise(r => setTimeout(r, 500)); // Extra time before opening URL
             }
 
             // Execute the command in the live browser
-            const result = await execCommand(sessionId, cmd, FIRECRAWL_API_KEY);
-            const output = result.stdout || result.output || result.result || JSON.stringify(result);
-            const hasError = result.stderr && result.stderr.includes("✗");
+            try {
+              console.log(`[v0] Executing command: ${cmd}`);
+              const result = await execCommand(sessionId, cmd, FIRECRAWL_API_KEY);
+              const output = result.stdout || result.output || result.result || JSON.stringify(result);
+              const hasError = result.stderr && result.stderr.includes("✗");
+              console.log(`[v0] Step ${i + 1} result (first 200 chars):`, output.slice(0, 200));
 
-            // Send result of this step
-            send("result", { index: i, cmd, output: output.slice(0, 1500), success: !hasError });
+              // Send result of this step
+              send("result", { index: i, cmd, output: output.slice(0, 1500), success: !hasError });
 
-            // Store snapshot output for ref resolution in future steps
-            if (cmd.includes("snapshot")) {
-              lastSnapshotOutput = output;
-            }
-
-            // Wait for browser to complete the action with appropriate delays
-            if (isOpenCmd) {
-              // Wait longer for page to fully load
-              send("step", { type: "info", desc: `Waiting for page to load...` });
-              await new Promise(r => setTimeout(r, 3000));
-            } else if (isClickCmd || isFillCmd) {
-              // Wait for click/fill action to complete
-              await new Promise(r => setTimeout(r, 1500));
-              
-              // Auto-snapshot after click/fill to verify and get updated refs
-              if (!steps[i + 1]?.cmd.includes("snapshot")) {
-                send("step", { type: "info", desc: `Taking verification snapshot...` });
-                const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
-                const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
-                lastSnapshotOutput = verifyOutput;
-                send("snapshot", { index: i, output: verifyOutput.slice(0, 1500) });
-                await new Promise(r => setTimeout(r, 500));
+              // Store snapshot output for ref resolution in future steps
+              if (cmd.includes("snapshot")) {
+                lastSnapshotOutput = output;
               }
-            } else {
-              // Standard delay between steps
-              await new Promise(r => setTimeout(r, 1000));
-            }
 
-            // Mark step as complete
-            send("step_complete", { index: i, total: steps.length, success: !hasError });
+              // Wait for browser to complete the action with appropriate delays
+              if (isOpenCmd) {
+                // Wait longer for page to fully load
+                send("step", { type: "info", desc: `Waiting for page to load...` });
+                await new Promise(r => setTimeout(r, 3000));
+              } else if (isClickCmd || isFillCmd) {
+                // Wait for click/fill action to complete
+                await new Promise(r => setTimeout(r, 1500));
+                
+                // Auto-snapshot after click/fill to verify and get updated refs
+                if (!steps[i + 1]?.cmd.includes("snapshot")) {
+                  send("step", { type: "info", desc: `Taking verification snapshot...` });
+                  const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
+                  const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
+                  lastSnapshotOutput = verifyOutput;
+                  send("snapshot", { index: i, output: verifyOutput.slice(0, 1500) });
+                  await new Promise(r => setTimeout(r, 500));
+                }
+              } else {
+                // Standard delay between steps
+                await new Promise(r => setTimeout(r, 1000));
+              }
+
+              // Mark step as complete
+              send("step_complete", { index: i, total: steps.length, success: !hasError });
+            } catch (stepErr) {
+              console.log(`[v0] Step ${i + 1} failed:`, stepErr);
+              send("result", { index: i, cmd, output: String(stepErr), success: false });
+              send("step_complete", { index: i, total: steps.length, success: false });
+            }
           }
 
           send("summary", { text: summary });
@@ -431,11 +473,17 @@ export async function GET(req: Request) {
         send("done", { message: "Agent finished. See live browser panel above." });
 
       } catch (err: unknown) {
+        console.log("[v0] Agent error caught:", err);
         send("agent_error", { message: err instanceof Error ? err.message : String(err) });
       } finally {
+        console.log("[v0] Stream ending, closing controller");
         controller.close();
         if (sessionId) {
-          setTimeout(() => deleteSession(sessionId!, FIRECRAWL_API_KEY), 300_000);
+          console.log("[v0] Scheduling session deletion in 5 minutes for:", sessionId);
+          setTimeout(() => {
+            console.log("[v0] Closing session:", sessionId);
+            deleteSession(sessionId!, FIRECRAWL_API_KEY);
+          }, 300_000);
         }
       }
     },

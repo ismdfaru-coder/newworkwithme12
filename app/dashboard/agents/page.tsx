@@ -147,18 +147,27 @@ export default function AgentsPage() {
     scrollToBottom()
   }, [messages])
 
-  // Cleanup browser session on unmount
+  // Use ref to track session for cleanup - avoids triggering cleanup on every session change
+  const browserSessionRef = useRef<typeof browserSession>(null)
+  
+  useEffect(() => {
+    browserSessionRef.current = browserSession
+  }, [browserSession])
+
+  // Cleanup browser session ONLY on unmount (not on session changes)
   useEffect(() => {
     return () => {
-      if (browserSession?.id) {
+      const sessionToClose = browserSessionRef.current
+      if (sessionToClose?.id) {
+        console.log("[v0] Component unmounting, closing session:", sessionToClose.id)
         fetch("/api/firecrawl", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "close", sessionId: browserSession.id }),
+          body: JSON.stringify({ action: "close", sessionId: sessionToClose.id }),
         }).catch(console.error)
       }
     }
-  }, [browserSession])
+  }, []) // Empty dependency array - only runs on unmount
 
   // Create Firecrawl browser session
   const createBrowserSession = useCallback(async () => {
