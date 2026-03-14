@@ -7,7 +7,7 @@ export const maxDuration = 300;
 
 const FC_BASE = "https://api.firecrawl.dev";
 const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY || "fc-5d2cfe6d91f44adf9a20f4489eaa5e0d";
-const KEYPLEX_API_KEY = process.env.KEYPLEX_API_KEY || "kpx_9b732e1e407a0407815bf916c2a45980ce59697bc780cb1e3788ca980a88a23e";
+const KEYPLEX_API_KEY = process.env.KEYPLEX_API_KEY || "kpx_9c82aaaba39a8004b8c363b1819e811eb1912ec1177ac144601e7ffb73301dce";
 
 async function createSession(fcKey: string) {
   const res = await fetch(`${FC_BASE}/v2/browser`, {
