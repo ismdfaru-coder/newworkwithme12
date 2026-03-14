@@ -1,6 +1,5 @@
 // app/api/agent/route.ts
-// CORRECT implementation — matches exactly what Firecrawl playground does:
-// iterative agent-browser bash commands, each snapshot feeds next decision
+// AGENTIC LOOP implementation — LLM called each step with current snapshot
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -155,26 +154,23 @@ If the same action fails twice:
 OUTPUT FORMAT — EVERY TURN
 ════════════════════════════════════════
 
-You MUST output ONLY valid JSON. No markdown, no explanation, no text outside JSON.
+Respond with ONLY the agent-browser command on a single line.
+Then optionally add a brief reason on the next line starting with "Reason:"
 
-{
-  "action": "agent-browser <command>",
-  "reason": "Why I'm taking this action based on current snapshot",
-  "observation": "What I see on screen right now",
-  "status": "continue" | "complete",
-  "summary": "Only when status is complete - summary of what was found"
-}
+Example:
+agent-browser click @e3
+Reason: Clicking to focus the FROM city input field
 
-Example turn:
-
-{
-  "action": "agent-browser click @e3",
-  "reason": "Clicking to focus the FROM city input field",
-  "observation": "Google Flights homepage loaded. FROM field visible at @e3.",
-  "status": "continue"
-}
+When task is complete, output:
+TASK COMPLETE
+What was found: [summary]
+Steps taken: [count]
 
 Wait for result before next action.`;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FIRECRAWL API HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
 
 async function createSession(fcKey: string) {
   const res = await fetch(`${FC_BASE}/v2/browser`, {
@@ -216,59 +212,25 @@ async function deleteSession(sessionId: string, fcKey: string) {
   });
 }
 
-// Ask Keyplex ONCE to generate ALL the steps needed for the task
-// Uses the comprehensive FIRECRAWL_SYSTEM_PROMPT for accurate browser automation
-async function getAllSteps(
-  task: string,
+// ═══════════════════════════════════════════════════════════════════════════════
+// LLM CALL — Get next action based on current snapshot
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface AgentMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+}
+
+async function getNextAction(
+  messages: AgentMessage[],
   kpKey: string
-): Promise<{ steps: { cmd: string; reason: string }[]; summary: string; rawResponse: string }> {
-  
-  // Override system prompt to request batch steps format (not agentic loop)
-  const batchSystemPrompt = `You are a Firecrawl Browser Automation Agent.
-
-When a user gives you a task, generate ALL the browser automation steps needed to complete it.
-
-AVAILABLE COMMANDS:
-  agent-browser open <url>
-  agent-browser snapshot -i
-  agent-browser click @eN
-  agent-browser type @eN "text"
-  agent-browser press @eN Control+A
-  agent-browser press @eN ArrowDown
-  agent-browser press @eN Enter
-  agent-browser wait <ms>
-  agent-browser scroll down
-  agent-browser scrape
-
-RULES:
-1. For text input: click field → press Control+A → type value → wait 1500 → snapshot → ArrowDown → Enter
-2. NEVER use fill command - always use type
-3. Snapshot after: page open, search submit, calendar navigation, tab switches
-4. Use scrape at the end to get data
-
-OUTPUT FORMAT - You MUST output ONLY valid JSON:
-{
-  "steps": [
-    { "cmd": "agent-browser open https://example.com", "reason": "Navigate to website" },
-    { "cmd": "agent-browser snapshot -i", "reason": "Get page elements" }
-  ],
-  "summary": "Brief description"
-}`;
-
+): Promise<string> {
   const requestBody = {
     model: "openai/gpt-4o-mini",
-    max_tokens: 4000,
+    max_tokens: 1000,
     messages: [
-      {
-        role: "system",
-        content: batchSystemPrompt
-      },
-      {
-        role: "user",
-        content: `TASK: ${task}
-
-Generate ALL browser automation steps to accomplish this task. Output ONLY valid JSON with steps array and summary.`
-      }
+      { role: "system", content: FIRECRAWL_SYSTEM_PROMPT },
+      ...messages
     ],
   };
 
@@ -284,7 +246,6 @@ Generate ALL browser automation steps to accomplish this task. Output ONLY valid
   if (!res.ok) {
     const errText = await res.text();
     
-    // Parse and provide user-friendly error messages
     try {
       const errJson = JSON.parse(errText);
       if (errJson.error?.code === "quota_exceeded") {
@@ -303,60 +264,200 @@ Generate ALL browser automation steps to accomplish this task. Output ONLY valid
   }
 
   const data = await res.json();
-  const rawContent = data.choices?.[0]?.message?.content ?? "{}";
-  const text = rawContent.replace(/```json|```/g, "").trim();
-  
+  const content = data.choices?.[0]?.message?.content ?? "";
+  return content;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HELPER: Extract agent-browser command from LLM response
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function extractCommand(response: string): string | null {
+  if (!response) return null;
+
+  // Find line starting with agent-browser
+  const lines = response.split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("agent-browser")) {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HELPER: Extract summary from completed task
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function extractSummary(messages: AgentMessage[]): string {
+  // Find the last assistant message containing TASK COMPLETE
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant" && messages[i].content.includes("TASK COMPLETE")) {
+      return messages[i].content;
+    }
+  }
+  return "Task completed";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN AGENTIC LOOP
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function runAgentLoop(
+  userTask: string,
+  sessionId: string,
+  kpKey: string,
+  send: (event: string, data: object) => void
+): Promise<{ success: boolean; steps: number; summary: string }> {
+  const messages: AgentMessage[] = [];
+  let taskComplete = false;
+  let stepCount = 0;
+  const MAX_STEPS = 30;
+
   try {
-    const parsed = JSON.parse(text);
+    // Step 1 — take first snapshot
+    send("step", { type: "info", desc: "Taking initial snapshot..." });
+    
+    const firstSnapshotResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
+    const firstSnapshot = firstSnapshotResult.stdout || firstSnapshotResult.output || firstSnapshotResult.result || "";
+
+    if (!firstSnapshot) {
+      send("step", { type: "error", desc: "Failed to get initial snapshot" });
+      return { success: false, steps: 0, summary: "Failed to get initial snapshot" };
+    }
+
+    send("snapshot", { index: 0, output: firstSnapshot.slice(0, 2000) });
+
+    // Seed first message with task and snapshot
+    messages.push({
+      role: "user",
+      content: `Task: ${userTask}\n\nCurrent page snapshot:\n${firstSnapshot}`
+    });
+
+    // ── AGENTIC LOOP ─────────────────────────────────────────────────────────
+    while (!taskComplete && stepCount < MAX_STEPS) {
+      stepCount++;
+
+      // ── 1. Call LLM to get next action ─────────────────────────────────────
+      send("step", { type: "info", desc: `Step ${stepCount}: Asking LLM for next action...` });
+
+      let response: string;
+      try {
+        response = await getNextAction(messages, kpKey);
+        
+        if (!response) {
+          send("step", { type: "error", desc: "LLM returned no response" });
+          break;
+        }
+      } catch (llmError) {
+        send("step", { type: "error", desc: `LLM call failed: ${llmError instanceof Error ? llmError.message : String(llmError)}` });
+        break;
+      }
+
+      // Add LLM response to history
+      messages.push({ role: "assistant", content: response });
+
+      // Send LLM response to UI
+      send("llm_response", { step: stepCount, response: response.slice(0, 1000) });
+
+      // ── 2. Check if task is done ───────────────────────────────────────────
+      if (response.includes("TASK COMPLETE")) {
+        taskComplete = true;
+        send("step", { type: "success", desc: "Task completed!" });
+        break;
+      }
+
+      // Check for manual intervention required
+      if (response.includes("MANUAL INTERVENTION REQUIRED")) {
+        send("step", { type: "warning", desc: "Manual intervention required (CAPTCHA or similar)" });
+        break;
+      }
+
+      // ── 3. Extract the agent-browser command ───────────────────────────────
+      const action = extractCommand(response);
+
+      if (!action) {
+        send("step", { type: "warning", desc: "No agent-browser command found, asking LLM to retry..." });
+        // Ask LLM to try again
+        messages.push({
+          role: "user",
+          content: "No valid agent-browser command found. Please respond with exactly one agent-browser command starting with 'agent-browser'."
+        });
+        continue;
+      }
+
+      send("command", { index: stepCount, cmd: action, status: "executing" });
+
+      // ── 4. Execute the command ─────────────────────────────────────────────
+      let result: string;
+      try {
+        const execResult = await execCommand(sessionId, action, FIRECRAWL_API_KEY);
+        result = execResult.stdout || execResult.output || execResult.result || JSON.stringify(execResult);
+      } catch (execError) {
+        result = `ERROR: ${execError instanceof Error ? execError.message : String(execError)}`;
+        send("step", { type: "error", desc: `Command failed: ${result}` });
+      }
+
+      send("result", { index: stepCount, cmd: action, output: result.slice(0, 1500), success: !result.startsWith("ERROR") });
+
+      // ── 5. Wait appropriate time based on command type ─────────────────────
+      if (action.includes("open ")) {
+        await new Promise(r => setTimeout(r, 3000));
+      } else if (action.includes("click ")) {
+        await new Promise(r => setTimeout(r, 1500));
+      } else if (action.includes("type ") || action.includes("fill ")) {
+        await new Promise(r => setTimeout(r, 1500));
+      } else if (action.includes("wait ")) {
+        // Wait command - extract ms if possible
+        const waitMatch = action.match(/wait\s+(\d+)/);
+        if (waitMatch) {
+          await new Promise(r => setTimeout(r, parseInt(waitMatch[1])));
+        }
+      } else {
+        await new Promise(r => setTimeout(r, 1000));
+      }
+
+      // ── 6. Take fresh snapshot ─────────────────────────────────────────────
+      let snapshot = "";
+      try {
+        const snapResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
+        snapshot = snapResult.stdout || snapResult.output || snapResult.result || "";
+        send("snapshot", { index: stepCount, output: snapshot.slice(0, 2000) });
+      } catch (snapError) {
+        snapshot = "Snapshot unavailable";
+        send("step", { type: "warning", desc: "Failed to get snapshot" });
+      }
+
+      // ── 7. Feed result back to LLM ─────────────────────────────────────────
+      messages.push({
+        role: "user",
+        content: [
+          `Step ${stepCount} result: ${result.slice(0, 500) || "No result returned"}`,
+          `Current snapshot:\n${snapshot.slice(0, 3000) || "No snapshot available"}`
+        ].join("\n\n")
+      });
+    }
+
+    if (stepCount >= MAX_STEPS && !taskComplete) {
+      send("step", { type: "warning", desc: `Reached max steps (${MAX_STEPS}) without completing task` });
+    }
+
     return {
-      steps: parsed.steps || [],
-      summary: parsed.summary || "Task plan generated",
-      rawResponse: rawContent
+      success: taskComplete,
+      steps: stepCount,
+      summary: extractSummary(messages)
     };
-  } catch {
-    return { steps: [], summary: "Failed to parse LLM response: " + text, rawResponse: rawContent };
+
+  } catch (fatalError) {
+    send("step", { type: "error", desc: `Fatal error: ${fatalError instanceof Error ? fatalError.message : String(fatalError)}` });
+    return { success: false, steps: stepCount, summary: `Fatal error: ${fatalError}` };
   }
 }
 
-// Match placeholder refs to actual element refs from snapshot
-function resolveRef(cmd: string, snapshotOutput: string): string {
-  // If cmd has a placeholder like @input_search, @button_submit, find matching element in snapshot
-  const placeholderMatch = cmd.match(/@([a-z_]+)/i);
-  if (!placeholderMatch) return cmd;
-  
-  const placeholder = placeholderMatch[1].toLowerCase();
-  
-  // Common patterns to match
-  const patterns: Record<string, RegExp[]> = {
-    'input_search': [/input.*search.*\[ref=(e\d+)\]/i, /searchbox.*\[ref=(e\d+)\]/i, /search.*input.*\[ref=(e\d+)\]/i],
-    'input_from': [/from.*input.*\[ref=(e\d+)\]/i, /origin.*\[ref=(e\d+)\]/i, /departure.*\[ref=(e\d+)\]/i],
-    'input_to': [/to.*input.*\[ref=(e\d+)\]/i, /destination.*\[ref=(e\d+)\]/i, /arrival.*\[ref=(e\d+)\]/i],
-    'button_submit': [/button.*search.*\[ref=(e\d+)\]/i, /submit.*\[ref=(e\d+)\]/i, /button.*go.*\[ref=(e\d+)\]/i],
-    'button_search': [/button.*search.*\[ref=(e\d+)\]/i, /search.*button.*\[ref=(e\d+)\]/i],
-  };
-  
-  // Try to find matching element
-  const patternsToTry = patterns[placeholder] || [];
-  for (const pattern of patternsToTry) {
-    const match = snapshotOutput.match(pattern);
-    if (match && match[1]) {
-      return cmd.replace(/@[a-z_]+/i, `@${match[1]}`);
-    }
-  }
-  
-  // If no pattern matched, try to find any input/button with a ref
-  if (placeholder.includes('input')) {
-    const inputMatch = snapshotOutput.match(/input.*\[ref=(e\d+)\]/i);
-    if (inputMatch) return cmd.replace(/@[a-z_]+/i, `@${inputMatch[1]}`);
-  }
-  if (placeholder.includes('button')) {
-    const buttonMatch = snapshotOutput.match(/button.*\[ref=(e\d+)\]/i);
-    if (buttonMatch) return cmd.replace(/@[a-z_]+/i, `@${buttonMatch[1]}`);
-  }
-  
-  // Return original if no match found
-  return cmd;
-}
+// ═══════════════════════════════════════════════════════════════════════════════
+// GET ENDPOINT — SSE streaming
+// ═══════════════════════════════════════════════════════════════════════════════
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -367,7 +468,6 @@ export async function GET(req: Request) {
     return new Response(JSON.stringify({ error: "Missing query" }), { status: 400 });
   }
 
-  // Keyplex API is called ONCE to get all steps, then executed locally
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -383,9 +483,6 @@ export async function GET(req: Request) {
 
         const session = await createSession(FIRECRAWL_API_KEY);
         
-        // Firecrawl returns { success: true, id: "...", liveViewUrl: "..." } on success
-        // OR { success: false, error: "..." } on failure
-        // OR just { id: "...", liveViewUrl: "..." } without success field
         if (session.success === false) {
           throw new Error(session.error ?? "Failed to create session");
         }
@@ -398,199 +495,26 @@ export async function GET(req: Request) {
 
         // Send liveViewUrl immediately so iframe appears in UI
         send("session", {
-          sessionId:              session.id,
-          liveViewUrl:            session.liveViewUrl,
+          sessionId: session.id,
+          liveViewUrl: session.liveViewUrl,
           interactiveLiveViewUrl: session.interactiveLiveViewUrl,
         });
 
         send("step", { type: "success", desc: `Session created. ID: ${session.id}` });
 
-        // ── 2. Get ALL steps from Keyplex in ONE API call ──────────────────
-        // Then execute them locally without repeated API calls
+        // ── 2. Run the agentic loop ──────────────────────────────
+        send("step", { type: "info", desc: "Starting agentic loop..." });
 
-        let lastSnapshotOutput = "";
+        const result = await runAgentLoop(query, sessionId, kpKey, send);
 
-        if (!kpKey) {
-          // No LLM key — run a hardcoded demo for flight search
-          send("step", { type: "info", desc: "No Keyplex key provided — running demo flight search commands" });
+        // ── 3. Send completion ───────────────────────────────────
+        send("summary", { 
+          success: result.success, 
+          steps: result.steps, 
+          text: result.summary 
+        });
 
-          const demoCmds = [
-            { cmd: `agent-browser open https://www.google.com/travel/flights`, reason: "Navigate to Google Flights" },
-            { cmd: `agent-browser snapshot -i`, reason: "Get page elements" },
-            { cmd: `agent-browser fill @e16 "Chennai"`, reason: "Enter departure city" },
-            { cmd: `agent-browser snapshot -i`, reason: "View updated page" },
-            { cmd: `agent-browser click @e5`, reason: "Select suggestion" },
-            { cmd: `agent-browser fill @e18 "Manchester"`, reason: "Enter destination" },
-            { cmd: `agent-browser snapshot -i`, reason: "View updated page" },
-          ];
-
-          for (let i = 0; i < demoCmds.length; i++) {
-            const { cmd, reason } = demoCmds[i];
-            send("command", { index: i, total: demoCmds.length, cmd, reason });
-
-            const result = await execCommand(sessionId, cmd, FIRECRAWL_API_KEY);
-            const output = result.stdout || result.output || result.result || JSON.stringify(result);
-            const hasError = result.stderr && result.stderr.includes("✗");
-
-            send("result", { index: i, cmd, output: output.slice(0, 500), success: !hasError });
-
-            if (cmd.includes("snapshot")) {
-              lastSnapshotOutput = output;
-            }
-
-            await new Promise(r => setTimeout(r, 800));
-          }
-
-        } else {
-          // Call Keyplex API ONCE to get all steps
-          send("step", { type: "info", desc: "Requesting task plan from Keyplex (single API call)..." });
-
-          const { steps, summary, rawResponse } = await getAllSteps(query, kpKey);
-
-          // ── PHASE 0: Show raw Keyplex API response first ──────────────────
-          send("keyplex_response", { 
-            raw: rawResponse,
-            parsed: { steps, summary }
-          });
-
-          // Give user time to read the response
-          await new Promise(r => setTimeout(r, 2000));
-
-          if (steps.length === 0) {
-            send("step", { type: "error", desc: "Failed to generate steps: " + summary });
-            send("done", { message: summary });
-            return;
-          }
-
-          send("step", { type: "success", desc: `Plan received: ${steps.length} steps to execute` });
-
-          // ── PHASE 1: Show all planned steps upfront ──────────────────
-          send("plan", { 
-            steps: steps.map((s, i) => ({ index: i, cmd: s.cmd, reason: s.reason })),
-            total: steps.length,
-            summary 
-          });
-
-          // Give user time to see the plan
-          await new Promise(r => setTimeout(r, 2000));
-
-          // ── PHASE 2: Execute steps one by one with verification ──────
-          send("step", { type: "info", desc: "Starting execution..." });
-
-          for (let i = 0; i < steps.length; i++) {
-            let { cmd, reason } = steps[i];
-
-            // Resolve placeholder refs using last snapshot output
-            if (lastSnapshotOutput && cmd.includes("@")) {
-              cmd = resolveRef(cmd, lastSnapshotOutput);
-            }
-
-            // Notify which step is starting
-            send("command", { index: i, total: steps.length, cmd, reason, status: "executing" });
-
-            // Give browser time to prepare (longer for open/navigate actions)
-            const isOpenCmd = cmd.includes("open ");
-            const isClickCmd = cmd.includes("click ");
-            const isFillCmd = cmd.includes("fill ");
-            
-            if (isOpenCmd) {
-              await new Promise(r => setTimeout(r, 500)); // Extra time before opening URL
-            }
-
-            // Execute the command in the live browser
-            const result = await execCommand(sessionId, cmd, FIRECRAWL_API_KEY);
-            const output = result.stdout || result.output || result.result || JSON.stringify(result);
-            const hasError = result.stderr && result.stderr.includes("✗");
-
-            // Send result of this step
-            send("result", { index: i, cmd, output: output.slice(0, 1500), success: !hasError });
-
-            // Store snapshot output for ref resolution in future steps
-            if (cmd.includes("snapshot")) {
-              lastSnapshotOutput = output;
-            }
-
-            // ── STEP SYNCHRONIZATION: Wait and verify before proceeding ──
-            const isWaitCmd = cmd.includes("wait ");
-            const isSnapshotCmd = cmd.includes("snapshot");
-            const isTypeCmd = cmd.includes("type ");
-            const isScrollCmd = cmd.includes("scroll ");
-            
-            if (isOpenCmd) {
-              // Wait for page to fully load
-              send("step", { type: "info", desc: `Waiting for page to load (3s)...` });
-              await new Promise(r => setTimeout(r, 3000));
-              
-              // Auto-snapshot to verify page loaded and get fresh refs
-              const nextCmd = steps[i + 1]?.cmd || "";
-              if (!nextCmd.includes("snapshot")) {
-                send("step", { type: "info", desc: `Verifying page load with snapshot...` });
-                const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
-                const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
-                lastSnapshotOutput = verifyOutput;
-                send("snapshot", { index: i, output: verifyOutput.slice(0, 1500), verified: true });
-                await new Promise(r => setTimeout(r, 500));
-              }
-            } else if (isClickCmd) {
-              // Wait for click action to complete and UI to react
-              send("step", { type: "info", desc: `Waiting for click action (1.5s)...` });
-              await new Promise(r => setTimeout(r, 1500));
-              
-              // Check if this is a dropdown/date picker trigger - wait longer
-              if (reason.toLowerCase().includes("dropdown") || reason.toLowerCase().includes("date") || reason.toLowerCase().includes("picker")) {
-                send("step", { type: "info", desc: `Extra wait for dropdown/picker animation (2s)...` });
-                await new Promise(r => setTimeout(r, 2000));
-              }
-              
-              // Auto-snapshot after click to verify and get updated refs
-              const nextCmdClick = steps[i + 1]?.cmd || "";
-              if (!nextCmdClick.includes("snapshot") && !nextCmdClick.includes("wait")) {
-                send("step", { type: "info", desc: `Verifying click result with snapshot...` });
-                const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
-                const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
-                lastSnapshotOutput = verifyOutput;
-                send("snapshot", { index: i, output: verifyOutput.slice(0, 1500), verified: true });
-                await new Promise(r => setTimeout(r, 500));
-              }
-            } else if (isFillCmd || isTypeCmd) {
-              // Wait for input processing and autocomplete
-              send("step", { type: "info", desc: `Waiting for input processing (1.5s)...` });
-              await new Promise(r => setTimeout(r, 1500));
-              
-              // Auto-snapshot to see autocomplete suggestions
-              const nextCmdType = steps[i + 1]?.cmd || "";
-              if (!nextCmdType.includes("snapshot") && !nextCmdType.includes("wait")) {
-                send("step", { type: "info", desc: `Verifying input with snapshot (checking autocomplete)...` });
-                const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
-                const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
-                lastSnapshotOutput = verifyOutput;
-                send("snapshot", { index: i, output: verifyOutput.slice(0, 1500), verified: true });
-                await new Promise(r => setTimeout(r, 500));
-              }
-            } else if (isScrollCmd) {
-              // Wait for lazy-loaded content
-              send("step", { type: "info", desc: `Waiting for scroll content (1s)...` });
-              await new Promise(r => setTimeout(r, 1000));
-            } else if (isSnapshotCmd) {
-              // Snapshot completed - store the output for verification
-              send("step", { type: "info", desc: `Snapshot captured - analyzing page state...` });
-              await new Promise(r => setTimeout(r, 500));
-            } else if (isWaitCmd) {
-              // Wait command already executed - just a small buffer
-              await new Promise(r => setTimeout(r, 200));
-            } else {
-              // Standard delay for other commands
-              await new Promise(r => setTimeout(r, 1000));
-            }
-
-            // Mark step as complete
-            send("step_complete", { index: i, total: steps.length, success: !hasError });
-          }
-
-          send("summary", { text: summary });
-        }
-
-        send("done", { message: "Agent finished. See live browser panel above." });
+        send("done", { message: "Agent finished." });
 
       } catch (err: unknown) {
         send("agent_error", { message: err instanceof Error ? err.message : String(err) });
@@ -605,14 +529,17 @@ export async function GET(req: Request) {
 
   return new Response(stream, {
     headers: {
-      "Content-Type":  "text/event-stream",
+      "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
-      Connection:      "keep-alive",
+      Connection: "keep-alive",
     },
   });
 }
 
-// POST endpoint for more complex requests
+// ═══════════════════════════════════════════════════════════════════════════════
+// POST ENDPOINT — for more complex requests
+// ═══════════════════════════════════════════════════════════════════════════════
+
 export async function POST(req: Request) {
   const body = await req.json();
   const { query, keyplex_key } = body;
