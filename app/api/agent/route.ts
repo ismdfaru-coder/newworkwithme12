@@ -223,19 +223,51 @@ async function getAllSteps(
   kpKey: string
 ): Promise<{ steps: { cmd: string; reason: string }[]; summary: string; rawResponse: string }> {
   
+  // Override system prompt to request batch steps format (not agentic loop)
+  const batchSystemPrompt = `You are a Firecrawl Browser Automation Agent.
+
+When a user gives you a task, generate ALL the browser automation steps needed to complete it.
+
+AVAILABLE COMMANDS:
+  agent-browser open <url>
+  agent-browser snapshot -i
+  agent-browser click @eN
+  agent-browser type @eN "text"
+  agent-browser press @eN Control+A
+  agent-browser press @eN ArrowDown
+  agent-browser press @eN Enter
+  agent-browser wait <ms>
+  agent-browser scroll down
+  agent-browser scrape
+
+RULES:
+1. For text input: click field → press Control+A → type value → wait 1500 → snapshot → ArrowDown → Enter
+2. NEVER use fill command - always use type
+3. Snapshot after: page open, search submit, calendar navigation, tab switches
+4. Use scrape at the end to get data
+
+OUTPUT FORMAT - You MUST output ONLY valid JSON:
+{
+  "steps": [
+    { "cmd": "agent-browser open https://example.com", "reason": "Navigate to website" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Get page elements" }
+  ],
+  "summary": "Brief description"
+}`;
+
   const requestBody = {
     model: "openai/gpt-4o-mini",
     max_tokens: 4000,
     messages: [
       {
         role: "system",
-        content: FIRECRAWL_SYSTEM_PROMPT
+        content: batchSystemPrompt
       },
       {
         role: "user",
         content: `TASK: ${task}
 
-Generate a complete sequence of browser automation steps to accomplish this task. Output ONLY valid JSON with steps array and summary.`
+Generate ALL browser automation steps to accomplish this task. Output ONLY valid JSON with steps array and summary.`
       }
     ],
   };
@@ -490,7 +522,8 @@ export async function GET(req: Request) {
               await new Promise(r => setTimeout(r, 3000));
               
               // Auto-snapshot to verify page loaded and get fresh refs
-              if (!steps[i + 1]?.cmd.includes("snapshot")) {
+              const nextCmd = steps[i + 1]?.cmd || "";
+              if (!nextCmd.includes("snapshot")) {
                 send("step", { type: "info", desc: `Verifying page load with snapshot...` });
                 const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
                 const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
@@ -510,7 +543,8 @@ export async function GET(req: Request) {
               }
               
               // Auto-snapshot after click to verify and get updated refs
-              if (!steps[i + 1]?.cmd.includes("snapshot") && !steps[i + 1]?.cmd.includes("wait")) {
+              const nextCmdClick = steps[i + 1]?.cmd || "";
+              if (!nextCmdClick.includes("snapshot") && !nextCmdClick.includes("wait")) {
                 send("step", { type: "info", desc: `Verifying click result with snapshot...` });
                 const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
                 const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
@@ -524,7 +558,8 @@ export async function GET(req: Request) {
               await new Promise(r => setTimeout(r, 1500));
               
               // Auto-snapshot to see autocomplete suggestions
-              if (!steps[i + 1]?.cmd.includes("snapshot") && !steps[i + 1]?.cmd.includes("wait")) {
+              const nextCmdType = steps[i + 1]?.cmd || "";
+              if (!nextCmdType.includes("snapshot") && !nextCmdType.includes("wait")) {
                 send("step", { type: "info", desc: `Verifying input with snapshot (checking autocomplete)...` });
                 const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
                 const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
