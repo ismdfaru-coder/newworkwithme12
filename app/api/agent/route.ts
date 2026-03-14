@@ -7,7 +7,7 @@ export const maxDuration = 300;
 
 const FC_BASE = "https://api.firecrawl.dev";
 const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY || "fc-5d2cfe6d91f44adf9a20f4489eaa5e0d";
-const KEYPLEX_API_KEY_DEFAULT = process.env.KEYPLEX_API_KEY || "kpx_9c82aaaba39a8004b8c363b1819e811eb1912ec1177ac144601e7ffb73301dce";
+const KEYPLEX_API_KEY_DEFAULT = process.env.KEYPLEX_API_KEY || "kpx_f72cdf30d9cec9f7b8e354ec174710fd79ac6c9ae4938a056dfef78b10903fdf";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // FIRECRAWL BROWSER AUTOMATION AGENT SYSTEM PROMPT
