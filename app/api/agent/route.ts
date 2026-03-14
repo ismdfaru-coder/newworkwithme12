@@ -65,8 +65,13 @@ async function getAllSteps(
 AVAILABLE COMMANDS:
 - agent-browser open <URL>           → Opens a webpage
 - agent-browser snapshot -i          → Returns list of page elements with [ref=eNN] identifiers  
+- agent-browser hover @eNN           → Moves mouse cursor to element (makes mouse visible)
 - agent-browser click @eNN           → Clicks element with that ref (e.g., @e5, @e16)
 - agent-browser fill @eNN "text"     → Types text into input field with that ref
+- agent-browser scroll down          → Scrolls the page down
+- agent-browser scroll up            → Scrolls the page up
+
+IMPORTANT: Before clicking any element, ALWAYS use "hover" first to move the mouse cursor to the element. This makes the mouse movement visible in the browser.
 
 PLANNING RULES:
 1. Start with "agent-browser open <URL>" for the relevant website
@@ -90,7 +95,9 @@ OUTPUT FORMAT (JSON only, no markdown):
       },
       {
         role: "user",
-        content: `TASK: ${task}
+        content: `create a prompt to browse via headless browser
+
+TASK: ${task}
 
 Generate a complete sequence of browser commands to accomplish this task. Include all necessary steps from start to finish.`
       }
