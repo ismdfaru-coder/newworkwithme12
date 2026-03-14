@@ -6,13 +6,13 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const FC_BASE = "https://api.firecrawl.dev";
-const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY || "fc-21c577cb2e1a48d1a850e2850aceb4b4";
+const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY || "fc-5d2cfe6d91f44adf9a20f4489eaa5e0d";
 
 async function createSession(fcKey: string) {
   const res = await fetch(`${FC_BASE}/v2/browser`, {
     method: "POST",
     headers: { Authorization: `Bearer ${fcKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ ttl: 300, activityTtl: 120 }),
+    body: JSON.stringify({ timeout: 60000 }), // 60 seconds = ~2 credits
   });
   
   if (!res.ok) {
