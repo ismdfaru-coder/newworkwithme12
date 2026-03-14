@@ -1,165 +1,122 @@
 import { NextRequest, NextResponse } from "next/server"
 
-const FIRECRAWL_API_URL = "https://api.firecrawl.dev/v2/browser"
 const FIRECRAWL_API_KEY = "fc-21c577cb2e1a48d1a850e2850aceb4b4"
+const FIRECRAWL_BASE_URL = "https://api.firecrawl.dev/v2/browser"
 
-// Create a new browser session
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { action, sessionId, code, language = "node" } = body
+    const { action, sessionId, code, language = "python" } = body
 
-    // Create a new browser session
+    const headers = {
+      "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
+      "Content-Type": "application/json",
+    }
+
+    // Step 1: Launch a session
     if (action === "create") {
-      console.log("[v0] Creating new Firecrawl browser session...")
-      
-      const response = await fetch(FIRECRAWL_API_URL, {
+      const response = await fetch(FIRECRAWL_BASE_URL, {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          ttl: 600, // 10 minutes
-          activityTtl: 300, // 5 minutes inactivity timeout
-        }),
+        headers,
       })
 
+      const data = await response.json()
+      
       if (!response.ok) {
-        const errorText = await response.text()
-        console.log("[v0] Create session error:", response.status, errorText)
         return NextResponse.json(
-          { error: `Firecrawl API error: ${response.status} - ${errorText}` },
+          { error: data.error || "Failed to create session" },
           { status: response.status }
         )
       }
 
-      const data = await response.json()
-      console.log("[v0] Session created:", data)
-      return NextResponse.json(data)
+      return NextResponse.json({
+        success: true,
+        id: data.id,
+        cdpUrl: data.cdpUrl,
+        liveViewUrl: data.liveViewUrl,
+        interactiveLiveViewUrl: data.interactiveLiveViewUrl,
+      })
     }
 
-    // Execute code in an existing session
-    if (action === "execute" && sessionId) {
-      console.log("[v0] Executing code in session:", sessionId, "language:", language)
-      console.log("[v0] Code to execute:", code)
-      
-      const response = await fetch(`${FIRECRAWL_API_URL}/${sessionId}/execute`, {
+    // Step 2: Execute code
+    if (action === "execute") {
+      if (!sessionId) {
+        return NextResponse.json(
+          { error: "Session ID is required" },
+          { status: 400 }
+        )
+      }
+
+      const response = await fetch(`${FIRECRAWL_BASE_URL}/${sessionId}/execute`, {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          code,
-          language, // "bash" for agent-browser commands, "node" or "python" for Playwright
-        }),
+        headers,
+        body: JSON.stringify({ code, language }),
       })
 
+      const data = await response.json()
+
       if (!response.ok) {
-        const errorText = await response.text()
-        console.log("[v0] Execute error:", response.status, errorText)
         return NextResponse.json(
-          { error: `Firecrawl API error: ${response.status} - ${errorText}` },
+          { error: data.error || "Failed to execute code" },
           { status: response.status }
         )
       }
 
-      const data = await response.json()
-      console.log("[v0] Execute result:", data)
-      return NextResponse.json(data)
+      return NextResponse.json({
+        success: true,
+        result: data.result,
+        screenshot: data.screenshot,
+      })
     }
 
-    // Close a browser session
-    if (action === "close" && sessionId) {
-      console.log("[v0] Closing session:", sessionId)
-      
-      // DELETE endpoint requires session ID in URL path
-      const response = await fetch(`${FIRECRAWL_API_URL}/${sessionId}`, {
+    // Step 3: List sessions
+    if (action === "list") {
+      const response = await fetch(`${FIRECRAWL_BASE_URL}?status=active`, {
+        method: "GET",
+        headers,
+      })
+
+      const data = await response.json()
+
+      return NextResponse.json({
+        success: true,
+        sessions: data.sessions || data,
+      })
+    }
+
+    // Step 4: Close session
+    if (action === "close") {
+      if (!sessionId) {
+        return NextResponse.json(
+          { error: "Session ID is required" },
+          { status: 400 }
+        )
+      }
+
+      const response = await fetch(`${FIRECRAWL_BASE_URL}/${sessionId}`, {
         method: "DELETE",
-        headers: {
-          "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
-        },
+        headers,
       })
 
       if (!response.ok) {
-        const errorText = await response.text()
-        console.log("[v0] Close session error:", response.status, errorText)
+        const data = await response.json()
         return NextResponse.json(
-          { error: `Firecrawl API error: ${response.status} - ${errorText}` },
+          { error: data.error || "Failed to close session" },
           { status: response.status }
         )
       }
 
-      return NextResponse.json({ success: true, message: "Session closed" })
+      return NextResponse.json({ success: true })
     }
 
     return NextResponse.json(
-      { error: "Invalid action. Use 'create', 'execute', or 'close'" },
+      { error: "Invalid action" },
       { status: 400 }
     )
   } catch (error) {
-    console.error("Error in Firecrawl API:", error)
+    console.error("Firecrawl API error:", error)
     return NextResponse.json(
-      { error: "Failed to process request" },
-      { status: 500 }
-    )
-  }
-}
-
-// Get session status or list sessions
-export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url)
-  const sessionId = searchParams.get("sessionId")
-
-  try {
-    // Get specific session info
-    if (sessionId) {
-      console.log("[v0] Getting session info:", sessionId)
-      
-      const response = await fetch(`${FIRECRAWL_API_URL}/${sessionId}`, {
-        method: "GET",
-        headers: {
-          "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
-        },
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        return NextResponse.json(
-          { error: `Firecrawl API error: ${response.status} - ${errorText}` },
-          { status: response.status }
-        )
-      }
-
-      const data = await response.json()
-      return NextResponse.json(data)
-    }
-
-    // List all sessions
-    console.log("[v0] Listing all sessions...")
-    
-    const response = await fetch(FIRECRAWL_API_URL, {
-      method: "GET",
-      headers: {
-        "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
-      },
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      return NextResponse.json(
-        { error: `Firecrawl API error: ${response.status} - ${errorText}` },
-        { status: response.status }
-      )
-    }
-
-    const data = await response.json()
-    return NextResponse.json(data)
-  } catch (error) {
-    console.error("Error fetching Firecrawl session:", error)
-    return NextResponse.json(
-      { error: "Failed to fetch session info" },
+      { error: "Internal server error" },
       { status: 500 }
     )
   }
