@@ -20,8 +20,7 @@ export async function POST(request: NextRequest) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          ttl: 600, // 10 minutes
-          activityTtl: 300, // 5 minutes inactivity timeout
+          timeout: 30000, // 30 seconds session (minimal credits ~1 credit)
         }),
       })
 
