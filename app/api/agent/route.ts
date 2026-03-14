@@ -318,8 +318,8 @@ export async function GET(req: Request) {
           // Give user time to see the plan
           await new Promise(r => setTimeout(r, 2000));
 
-          // ── PHASE 2: Execute steps one by one with verification ──────
-          send("step", { type: "info", desc: "Starting execution..." });
+          // ── PHASE 2: Execute steps one by one with VERIFICATION after each ──────
+          send("step", { type: "info", desc: "Starting execution with step-by-step verification..." });
 
           for (let i = 0; i < steps.length; i++) {
             let { cmd, reason } = steps[i];
@@ -332,16 +332,17 @@ export async function GET(req: Request) {
             // Notify which step is starting
             send("command", { index: i, total: steps.length, cmd, reason, status: "executing" });
 
-            // Give browser time to prepare (longer for open/navigate actions)
+            // Determine command type
             const isOpenCmd = cmd.includes("open ");
             const isClickCmd = cmd.includes("click ");
             const isFillCmd = cmd.includes("fill ");
-            
-            if (isOpenCmd) {
-              await new Promise(r => setTimeout(r, 500)); // Extra time before opening URL
-            }
+            const isSnapshotCmd = cmd.includes("snapshot");
+            const isScrollCmd = cmd.includes("scroll");
+            const isWaitCmd = cmd.includes("wait");
 
-            // Execute the command in the live browser
+            // ── STEP 1: Execute the command ──────────────────────────────
+            send("step", { type: "info", desc: `Executing: ${cmd.substring(0, 50)}...` });
+            
             const result = await execCommand(sessionId, cmd, FIRECRAWL_API_KEY);
             const output = result.stdout || result.output || result.result || JSON.stringify(result);
             const hasError = result.stderr && result.stderr.includes("✗");
@@ -349,48 +350,83 @@ export async function GET(req: Request) {
             // Send result of this step
             send("result", { index: i, cmd, output: output.slice(0, 1500), success: !hasError });
 
-            // Store snapshot output for ref resolution in future steps
-            if (cmd.includes("snapshot")) {
+            // Store snapshot output for ref resolution
+            if (isSnapshotCmd) {
               lastSnapshotOutput = output;
             }
 
-            // Wait for browser to complete the action with appropriate delays
+            // ── STEP 2: Wait appropriate time for action to complete ─────
             if (isOpenCmd) {
-              // Wait longer for page to fully load
-              send("step", { type: "info", desc: `Waiting for page to load (5s)...` });
+              send("step", { type: "info", desc: `Page loading... waiting 5 seconds` });
               await new Promise(r => setTimeout(r, 5000));
-            } else if (isClickCmd || isFillCmd) {
-              // Wait for click/fill action to complete
-              send("step", { type: "info", desc: `Waiting for action to complete (3s)...` });
+            } else if (isClickCmd) {
+              send("step", { type: "info", desc: `Click action... waiting 3 seconds` });
               await new Promise(r => setTimeout(r, 3000));
-              
-              // Auto-snapshot after click/fill to verify and get updated refs
-              if (!steps[i + 1]?.cmd.includes("snapshot")) {
-                send("step", { type: "info", desc: `Taking verification snapshot...` });
-                const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
-                const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
-                lastSnapshotOutput = verifyOutput;
-                send("snapshot", { index: i, output: verifyOutput.slice(0, 1500) });
-                await new Promise(r => setTimeout(r, 2000));
-              }
-            } else if (cmd.includes("snapshot")) {
-              // Wait after snapshot to allow page state to settle
-              send("step", { type: "info", desc: `Processing snapshot (2s)...` });
+            } else if (isFillCmd) {
+              send("step", { type: "info", desc: `Fill action... waiting 3 seconds` });
+              await new Promise(r => setTimeout(r, 3000));
+            } else if (isScrollCmd) {
+              send("step", { type: "info", desc: `Scroll action... waiting 2 seconds` });
               await new Promise(r => setTimeout(r, 2000));
-            } else if (cmd.includes("wait")) {
-              // Extract wait time from command like "agent-browser wait 3000"
+            } else if (isWaitCmd) {
               const waitMatch = cmd.match(/wait\s+(\d+)/);
               const waitTime = waitMatch ? parseInt(waitMatch[1]) : 2000;
-              send("step", { type: "info", desc: `Waiting ${waitTime}ms as requested...` });
+              send("step", { type: "info", desc: `Waiting ${waitTime}ms as requested` });
               await new Promise(r => setTimeout(r, waitTime));
+            } else if (isSnapshotCmd) {
+              send("step", { type: "info", desc: `Processing snapshot... waiting 2 seconds` });
+              await new Promise(r => setTimeout(r, 2000));
             } else {
-              // Standard delay between steps
-              send("step", { type: "info", desc: `Waiting before next step (2s)...` });
+              send("step", { type: "info", desc: `Waiting 2 seconds before next step` });
               await new Promise(r => setTimeout(r, 2000));
             }
 
-            // Mark step as complete
-            send("step_complete", { index: i, total: steps.length, success: !hasError });
+            // ── STEP 3: ALWAYS take verification snapshot (except if this was already a snapshot) ─────
+            if (!isSnapshotCmd) {
+              send("step", { type: "info", desc: `Taking verification snapshot for step ${i + 1}...` });
+              
+              try {
+                const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
+                const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
+                const verifyError = verifyResult.stderr && verifyResult.stderr.includes("✗");
+                
+                // Store for next step's ref resolution
+                lastSnapshotOutput = verifyOutput;
+                
+                // Send verification snapshot to UI
+                send("verification", { 
+                  stepIndex: i, 
+                  snapshot: verifyOutput.slice(0, 2000),
+                  verified: !verifyError,
+                  message: verifyError ? "Verification failed - page state may have changed" : "Step verified successfully"
+                });
+
+                // Wait after verification snapshot
+                send("step", { type: "info", desc: `Verification complete. Waiting 2 seconds before next step...` });
+                await new Promise(r => setTimeout(r, 2000));
+                
+              } catch (verifyErr) {
+                send("verification", { 
+                  stepIndex: i, 
+                  snapshot: "",
+                  verified: false,
+                  message: `Verification snapshot failed: ${verifyErr instanceof Error ? verifyErr.message : String(verifyErr)}`
+                });
+                // Continue anyway but note the failure
+                await new Promise(r => setTimeout(r, 1000));
+              }
+            }
+
+            // ── STEP 4: Mark step as complete, ready for next ─────
+            send("step_complete", { 
+              index: i, 
+              total: steps.length, 
+              success: !hasError,
+              message: `Step ${i + 1}/${steps.length} completed and verified`
+            });
+
+            // Brief pause before starting next step
+            await new Promise(r => setTimeout(r, 500));
           }
 
           send("summary", { text: summary });
