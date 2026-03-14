@@ -1,33 +1,11 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { Plus, ArrowUp, Presentation, Globe, Smartphone, Paintbrush } from "lucide-react"
 import { Button } from "@/components/ui/button"
 
-const heroTexts = [
-  "What can I do for you?",
-  "What do you want to know?",
-  "Lightning Speed Chat in Turbo mode.",
-  "I can Browse and remove your Hassle, You Just WorkwithMe",
-]
-
 export function HeroSection() {
   const [inputValue, setInputValue] = useState("")
-  const [textIndex, setTextIndex] = useState(0)
-  const [isVisible, setIsVisible] = useState(true)
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setIsVisible(false)
-      
-      setTimeout(() => {
-        setTextIndex((prev) => (prev + 1) % heroTexts.length)
-        setIsVisible(true)
-      }, 500)
-    }, 3000)
-
-    return () => clearInterval(interval)
-  }, [])
 
   const quickActions = [
     { icon: Presentation, label: "Create slides" },
@@ -38,14 +16,8 @@ export function HeroSection() {
 
   return (
     <section className="flex flex-col items-center justify-center px-4 py-24">
-      <h1 className="mb-12 text-center text-4xl font-serif md:text-5xl lg:text-6xl min-h-[1.5em]">
-        <span
-          className={`inline-block transition-opacity duration-500 ${
-            isVisible ? "opacity-100" : "opacity-0"
-          }`}
-        >
-          {heroTexts[textIndex]}
-        </span>
+      <h1 className="mb-12 text-center text-4xl font-serif md:text-5xl lg:text-6xl">
+        What can I do for you?
       </h1>
 
       <div className="w-full max-w-3xl">
