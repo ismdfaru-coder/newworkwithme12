@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 
-const FIRECRAWL_API_KEY = "fc-21c577cb2e1a48d1a850e2850aceb4b4"
+const FIRECRAWL_API_KEY = "fc-5d2cfe6d91f44adf9a20f4489eaa5e0d"
 const FIRECRAWL_BASE_URL = "https://api.firecrawl.dev/v2/browser"
 
 export async function POST(request: NextRequest) {
