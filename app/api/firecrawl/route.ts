@@ -13,11 +13,14 @@ export async function POST(request: NextRequest) {
       "Content-Type": "application/json",
     }
 
-    // Step 1: Launch a session
+    // Step 1: Launch a session (60 seconds timeout = ~2 credits)
     if (action === "create") {
       const response = await fetch(FIRECRAWL_BASE_URL, {
         method: "POST",
         headers,
+        body: JSON.stringify({
+          timeout: 60000, // 60 seconds instead of 600s default
+        }),
       })
 
       const data = await response.json()

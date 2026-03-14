@@ -60,8 +60,15 @@ export default function AgentsPage() {
     }
   }, [browserSession])
 
-  // Create browser session
+  // Create browser session (or reuse existing)
   const createBrowserSession = async () => {
+    // If we already have a session, reuse it
+    if (browserSession?.id) {
+      setShowBrowserPanel(true)
+      setExecutionLogs(prev => [...prev, `Reusing session: ${browserSession.id}`])
+      return browserSession
+    }
+
     setIsBrowserLoading(true)
     setExecutionLogs(prev => [...prev, "Creating browser session..."])
     
