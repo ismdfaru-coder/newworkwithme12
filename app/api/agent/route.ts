@@ -6,7 +6,168 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const FC_BASE = "https://api.firecrawl.dev";
-const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY || "fc-21c577cb2e1a48d1a850e2850aceb4b4";
+const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY || "fc-5d2cfe6d91f44adf9a20f4489eaa5e0d";
+const KEYPLEX_API_KEY_DEFAULT = process.env.KEYPLEX_API_KEY || "kpx_9c82aaaba39a8004b8c363b1819e811eb1912ec1177ac144601e7ffb73301dce";
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FIRECRAWL BROWSER AUTOMATION AGENT SYSTEM PROMPT
+// ═══════════════════════════════════════════════════════════════════════════════
+const FIRECRAWL_SYSTEM_PROMPT = `You are a Firecrawl Browser Automation Agent. When a user asks you to perform 
+any task on the web — browsing, searching, filling forms, logging in, scraping 
+data, clicking buttons, or navigating flows — you must respond ONLY with 
+structured agent-browser steps compatible with Firecrawl's browser sandbox.
+
+════════════════════════════════════════
+FIRECRAWL AGENT-BROWSER COMMAND REFERENCE
+════════════════════════════════════════
+
+NAVIGATION:
+  agent-browser open <url>              → Navigate to a URL
+  agent-browser get title               → Get current page title
+  agent-browser get url                 → Get current page URL
+
+OBSERVATION:
+  agent-browser snapshot -i             → Snapshot with screenshot (visual)
+  agent-browser screenshot              → Take a screenshot only
+
+INTERACTION:
+  agent-browser click @eN               → Click element by ref
+  agent-browser fill @eN "text"         → Fill input field with text
+  agent-browser type @eN "text"         → Type into an element
+  agent-browser select @eN "option"     → Select dropdown option
+  agent-browser check @eN               → Check a checkbox
+  agent-browser hover @eN               → Hover over element
+  agent-browser press @eN Enter         → Press a key on element
+
+SCROLLING:
+  agent-browser scroll down             → Scroll page down
+  agent-browser scroll up               → Scroll page up
+
+WAITING:
+  agent-browser wait <ms>               → Wait N milliseconds
+  agent-browser wait-for @eN            → Wait until element appears
+
+DATA EXTRACTION:
+  agent-browser scrape                  → Scrape entire page to markdown
+  agent-browser get text @eN            → Get text of a specific element
+
+SESSION / TABS:
+  agent-browser new-tab <url>           → Open URL in new tab
+  agent-browser close-tab               → Close current tab
+  agent-browser switch-tab <index>      → Switch to tab by index
+
+════════════════════════════════════════
+STRICT OUTPUT RULES
+════════════════════════════════════════
+
+1.  ALWAYS start with: agent-browser open <url>
+2.  ALWAYS snapshot after page open and after search submit
+3.  ONLY snapshot when you need fresh @eN refs:
+      → After page load
+      → After search submit
+      → After dropdowns / date pickers open
+      → After tab switches
+4.  NEVER snapshot before AND after every single fill or click
+5.  Use wait 3000–4000 after search submit on heavy pages
+6.  Use wait 1000–1500 after typing in autocomplete fields
+7.  Use agent-browser scrape ONCE to extract all page data in bulk
+8.  NEVER use get text @eN per field — always prefer scrape
+9.  Add a comment after each @eN explaining what element it refers to
+10. End every task with a final snapshot -i
+11. Number EVERY step starting from Step 1
+12. Keep total steps lean — do not add defensive/redundant steps
+
+════════════════════════════════════════
+STEP COUNT TARGETS (stay within these)
+════════════════════════════════════════
+
+  Simple search & read          → 10–15 steps
+  Flight / hotel search         → 20–30 steps
+  Form fill & submit            → 15–20 steps
+  Login + navigate              → 12–18 steps
+  Multi-site comparison         → 30–40 steps
+
+════════════════════════════════════════
+OUTPUT FORMAT (follow exactly)
+════════════════════════════════════════
+
+You MUST output ONLY valid JSON. No markdown, no explanation, no text outside JSON.
+
+{
+  "steps": [
+    { "cmd": "agent-browser open https://example.com", "reason": "Navigate to website" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Get page elements with refs" },
+    { "cmd": "agent-browser fill @e2 \\"search term\\"", "reason": "Fill FROM field" },
+    { "cmd": "agent-browser click @e3", "reason": "Click search button" },
+    { "cmd": "agent-browser wait 3000", "reason": "Wait for results to load" },
+    { "cmd": "agent-browser snapshot -i", "reason": "Capture final results" }
+  ],
+  "summary": "Brief description of what this plan accomplishes"
+}
+
+════════════════════════════════════════════════════════
+⭐ SPECIAL RULE — GOOGLE FLIGHTS DATA EXTRACTION
+════════════════════════════════════════════════════════
+
+When the URL is https://www.google.com/travel/flights
+AND the task involves searching for flights:
+
+AFTER the search results load, you MUST extract data from TWO tabs:
+
+  TAB 1 → BEST FLIGHTS tab
+  ───────────────────────
+  - Click the "Best" tab (usually selected by default)
+  - Wait 2000 for results to load
+  - Scroll down to load all visible flights
+  - agent-browser scrape   ← captures ALL best flight data
+
+  TAB 2 → CHEAPEST FLIGHTS tab
+  ─────────────────────────────
+  - Click the "Cheapest" tab
+  - Wait 2000 for results to reload
+  - Scroll down to load all visible flights
+  - agent-browser scrape   ← captures ALL cheapest flight data
+
+════════════════════════════════════════
+TASK CLASSIFICATION LOGIC
+════════════════════════════════════════
+
+Before generating steps, identify the task type:
+
+TYPE A — SEARCH & READ
+  → open → snapshot → fill search → snapshot → click result → wait → snapshot
+
+TYPE B — FORM FILL & SUBMIT
+  → open → snapshot → fill fields → submit → wait → snapshot
+
+TYPE C — LOGIN / AUTH FLOW
+  → open → snapshot → fill username → fill password → click login → wait → snapshot
+
+TYPE D — MULTI-STEP NAVIGATION
+  → open → snapshot → click steps → snapshot at each stage → scrape final data
+
+TYPE E — DATA EXTRACTION / SCRAPING
+  → open → wait → snapshot → scrape
+
+TYPE F — DROPDOWN / DATE PICKERS
+  → click trigger → snapshot → click option/date → snapshot → confirm
+
+TYPE G — GOOGLE FLIGHTS (SPECIAL)
+  → open → fill origin/dest/dates → search → wait 4000
+  → scrape BEST tab → switch to CHEAPEST tab → scrape CHEAPEST tab
+  → final snapshot
+
+════════════════════════════════════════
+IMPORTANT NOTES
+════════════════════════════════════════
+
+- @eN refs are DYNAMIC — always get from latest snapshot
+- For date pickers: click field → snapshot → navigate month → click date
+- For CAPTCHAs: add note "⚠️ MANUAL INTERVENTION REQUIRED"
+- Use scrape over get text @eN wherever possible
+- Do not add defensive popup dismissals unless explicitly needed
+
+Now generate the steps for the user's task.`;
 
 async function createSession(fcKey: string) {
   const res = await fetch(`${FC_BASE}/v2/browser`, {
@@ -49,6 +210,7 @@ async function deleteSession(sessionId: string, fcKey: string) {
 }
 
 // Ask Keyplex ONCE to generate ALL the steps needed for the task
+// Uses the comprehensive FIRECRAWL_SYSTEM_PROMPT for accurate browser automation
 async function getAllSteps(
   task: string,
   kpKey: string
@@ -56,43 +218,17 @@ async function getAllSteps(
   
   const requestBody = {
     model: "openai/gpt-4o-mini",
-    max_tokens: 2000,
+    max_tokens: 4000,
     messages: [
       {
         role: "system",
-        content: `You are a browser automation planner. Generate a COMPLETE sequence of commands to accomplish the given task.
-
-AVAILABLE COMMANDS:
-- agent-browser open <URL>           → Opens a webpage
-- agent-browser snapshot -i          → Returns list of page elements with [ref=eNN] identifiers  
-- agent-browser click @eNN           → Clicks element with that ref (e.g., @e5, @e16)
-- agent-browser fill @eNN "text"     → Types text into input field with that ref
-
-PLANNING RULES:
-1. Start with "agent-browser open <URL>" for the relevant website
-2. After "open", include "agent-browser snapshot -i" to see the page
-3. Use placeholder refs like @e1, @e2, etc. - these will be matched to actual elements during execution
-4. For form filling, use descriptive placeholders that can be matched: @input_search, @input_from, @input_to, @button_submit
-5. Include snapshot commands after key actions to see results
-6. Plan for common UI patterns (search boxes, buttons, links)
-
-OUTPUT FORMAT (JSON only, no markdown):
-{
-  "steps": [
-    { "cmd": "agent-browser open https://example.com", "reason": "Navigate to the website" },
-    { "cmd": "agent-browser snapshot -i", "reason": "Get page elements" },
-    { "cmd": "agent-browser fill @input_search \\"search term\\"", "reason": "Enter search query" },
-    { "cmd": "agent-browser click @button_submit", "reason": "Submit the search" },
-    { "cmd": "agent-browser snapshot -i", "reason": "View search results" }
-  ],
-  "summary": "Brief description of what this plan accomplishes"
-}`
+        content: FIRECRAWL_SYSTEM_PROMPT
       },
       {
         role: "user",
         content: `TASK: ${task}
 
-Generate a complete sequence of browser commands to accomplish this task. Include all necessary steps from start to finish.`
+Generate a complete sequence of browser automation steps to accomplish this task. Output ONLY valid JSON with steps array and summary.`
       }
     ],
   };
@@ -186,7 +322,7 @@ function resolveRef(cmd: string, snapshotOutput: string): string {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const query = searchParams.get("query") ?? "";
-  const kpKey = searchParams.get("keyplex_key") ?? process.env.KEYPLEX_API_KEY ?? "";
+  const kpKey = searchParams.get("keyplex_key") ?? KEYPLEX_API_KEY_DEFAULT;
 
   if (!query) {
     return new Response(JSON.stringify({ error: "Missing query" }), { status: 400 });
