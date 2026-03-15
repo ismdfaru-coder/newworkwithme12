@@ -1,18 +1,44 @@
 // app/api/agent/route.ts
-// CORRECT implementation — matches exactly what Firecrawl playground does:
-// iterative agent-browser bash commands, each snapshot feeds next decision
+// Browser Use API v3 implementation
+// Creates a session with a task and polls for completion with streaming updates
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const FC_BASE = "https://api.firecrawl.dev";
-const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY || "fc-21c577cb2e1a48d1a850e2850aceb4b4";
+const BROWSER_USE_API_URL = "https://api.browser-use.com/api/v3";
+const BROWSER_USE_API_KEY = process.env.BROWSER_USE_API_KEY || "bu_7DCoBFfKI2IaGqA8S6tHOA2fLQmk0UghmERu8RTzXyg";
 
-async function createSession(fcKey: string) {
-  const res = await fetch(`${FC_BASE}/v2/browser`, {
+interface BrowserUseSession {
+  id: string;
+  status: "created" | "idle" | "running" | "stopped" | "timed_out" | "error";
+  model: "bu-mini" | "bu-max";
+  title?: string | null;
+  output?: unknown;
+  liveUrl?: string | null;
+  totalCostUsd?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface BrowserUseMessage {
+  role: string;
+  content: string;
+  timestamp?: string;
+}
+
+async function createSessionWithTask(task: string, model: "bu-mini" | "bu-max" = "bu-mini"): Promise<BrowserUseSession> {
+  const res = await fetch(`${BROWSER_USE_API_URL}/sessions`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${fcKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ ttl: 300, activityTtl: 120 }),
+    headers: { 
+      "x-api-key": BROWSER_USE_API_KEY, 
+      "Content-Type": "application/json" 
+    },
+    body: JSON.stringify({
+      task,
+      model,
+      keepAlive: false, // Auto-stop when task finishes
+      proxyCountryCode: "us",
+    }),
   });
   
   if (!res.ok) {
@@ -23,176 +49,54 @@ async function createSession(fcKey: string) {
   return res.json();
 }
 
-async function execCommand(sessionId: string, command: string, fcKey: string) {
-  const res = await fetch(`${FC_BASE}/v2/browser/${sessionId}/execute`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${fcKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      code: command,
-      language: "bash",
-    }),
+async function getSession(sessionId: string): Promise<BrowserUseSession> {
+  const res = await fetch(`${BROWSER_USE_API_URL}/sessions/${sessionId}`, {
+    method: "GET",
+    headers: { "x-api-key": BROWSER_USE_API_KEY },
   });
   
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Execute failed: ${res.status} - ${errText}`);
+    throw new Error(`Failed to get session: ${res.status} - ${errText}`);
   }
   
   return res.json();
 }
 
-async function deleteSession(sessionId: string, fcKey: string) {
-  await fetch(`${FC_BASE}/v2/browser/${sessionId}`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${fcKey}` },
+async function getSessionMessages(sessionId: string): Promise<BrowserUseMessage[]> {
+  const res = await fetch(`${BROWSER_USE_API_URL}/sessions/${sessionId}/messages`, {
+    method: "GET",
+    headers: { "x-api-key": BROWSER_USE_API_KEY },
   });
+  
+  if (!res.ok) {
+    // Messages endpoint may not be available yet
+    return [];
+  }
+  
+  return res.json();
 }
 
-// Ask Keyplex ONCE to generate ALL the steps needed for the task
-async function getAllSteps(
-  task: string,
-  kpKey: string
-): Promise<{ steps: { cmd: string; reason: string }[]; summary: string; rawResponse: string }> {
-  
-  const requestBody = {
-    model: "openai/gpt-4o-mini",
-    max_tokens: 2000,
-    messages: [
-      {
-        role: "system",
-        content: `You are a browser automation planner. Generate a COMPLETE sequence of commands to accomplish the given task.
-
-AVAILABLE COMMANDS:
-- agent-browser open <URL>           → Opens a webpage
-- agent-browser snapshot -i          → Returns list of page elements with [ref=eNN] identifiers  
-- agent-browser click @eNN           → Clicks element with that ref (e.g., @e5, @e16)
-- agent-browser fill @eNN "text"     → Types text into input field with that ref
-
-PLANNING RULES:
-1. Start with "agent-browser open <URL>" for the relevant website
-2. After "open", include "agent-browser snapshot -i" to see the page
-3. Use placeholder refs like @e1, @e2, etc. - these will be matched to actual elements during execution
-4. For form filling, use descriptive placeholders that can be matched: @input_search, @input_from, @input_to, @button_submit
-5. Include snapshot commands after key actions to see results
-6. Plan for common UI patterns (search boxes, buttons, links)
-
-OUTPUT FORMAT (JSON only, no markdown):
-{
-  "steps": [
-    { "cmd": "agent-browser open https://example.com", "reason": "Navigate to the website" },
-    { "cmd": "agent-browser snapshot -i", "reason": "Get page elements" },
-    { "cmd": "agent-browser fill @input_search \\"search term\\"", "reason": "Enter search query" },
-    { "cmd": "agent-browser click @button_submit", "reason": "Submit the search" },
-    { "cmd": "agent-browser snapshot -i", "reason": "View search results" }
-  ],
-  "summary": "Brief description of what this plan accomplishes"
-}`
-      },
-      {
-        role: "user",
-        content: `TASK: ${task}
-
-Generate a complete sequence of browser commands to accomplish this task. Include all necessary steps from start to finish.`
-      }
-    ],
-  };
-
-  const res = await fetch("https://keyplex.ai/api/v1/chat/completions", {
+async function stopSession(sessionId: string): Promise<void> {
+  await fetch(`${BROWSER_USE_API_URL}/sessions/${sessionId}/stop`, {
     method: "POST",
     headers: { 
-      "Authorization": `Bearer ${kpKey}`, 
+      "x-api-key": BROWSER_USE_API_KEY,
       "Content-Type": "application/json" 
     },
-    body: JSON.stringify(requestBody),
+    body: JSON.stringify({ strategy: "session" }),
   });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    
-    // Parse and provide user-friendly error messages
-    try {
-      const errJson = JSON.parse(errText);
-      if (errJson.error?.code === "quota_exceeded") {
-        throw new Error(`QUOTA_EXCEEDED: Your Keyplex token quota has been exceeded. Please upgrade at https://keyplex.ai/account#billing`);
-      }
-      if (errJson.error?.message) {
-        throw new Error(`Keyplex API: ${errJson.error.message}`);
-      }
-    } catch (parseErr) {
-      if (parseErr instanceof Error && parseErr.message.startsWith("QUOTA_EXCEEDED")) {
-        throw parseErr;
-      }
-    }
-    
-    throw new Error(`Keyplex API error: ${res.status} - ${errText}`);
-  }
-
-  const data = await res.json();
-  const rawContent = data.choices?.[0]?.message?.content ?? "{}";
-  const text = rawContent.replace(/```json|```/g, "").trim();
-  
-  try {
-    const parsed = JSON.parse(text);
-    return {
-      steps: parsed.steps || [],
-      summary: parsed.summary || "Task plan generated",
-      rawResponse: rawContent
-    };
-  } catch {
-    return { steps: [], summary: "Failed to parse LLM response: " + text, rawResponse: rawContent };
-  }
-}
-
-// Match placeholder refs to actual element refs from snapshot
-function resolveRef(cmd: string, snapshotOutput: string): string {
-  // If cmd has a placeholder like @input_search, @button_submit, find matching element in snapshot
-  const placeholderMatch = cmd.match(/@([a-z_]+)/i);
-  if (!placeholderMatch) return cmd;
-  
-  const placeholder = placeholderMatch[1].toLowerCase();
-  
-  // Common patterns to match
-  const patterns: Record<string, RegExp[]> = {
-    'input_search': [/input.*search.*\[ref=(e\d+)\]/i, /searchbox.*\[ref=(e\d+)\]/i, /search.*input.*\[ref=(e\d+)\]/i],
-    'input_from': [/from.*input.*\[ref=(e\d+)\]/i, /origin.*\[ref=(e\d+)\]/i, /departure.*\[ref=(e\d+)\]/i],
-    'input_to': [/to.*input.*\[ref=(e\d+)\]/i, /destination.*\[ref=(e\d+)\]/i, /arrival.*\[ref=(e\d+)\]/i],
-    'button_submit': [/button.*search.*\[ref=(e\d+)\]/i, /submit.*\[ref=(e\d+)\]/i, /button.*go.*\[ref=(e\d+)\]/i],
-    'button_search': [/button.*search.*\[ref=(e\d+)\]/i, /search.*button.*\[ref=(e\d+)\]/i],
-  };
-  
-  // Try to find matching element
-  const patternsToTry = patterns[placeholder] || [];
-  for (const pattern of patternsToTry) {
-    const match = snapshotOutput.match(pattern);
-    if (match && match[1]) {
-      return cmd.replace(/@[a-z_]+/i, `@${match[1]}`);
-    }
-  }
-  
-  // If no pattern matched, try to find any input/button with a ref
-  if (placeholder.includes('input')) {
-    const inputMatch = snapshotOutput.match(/input.*\[ref=(e\d+)\]/i);
-    if (inputMatch) return cmd.replace(/@[a-z_]+/i, `@${inputMatch[1]}`);
-  }
-  if (placeholder.includes('button')) {
-    const buttonMatch = snapshotOutput.match(/button.*\[ref=(e\d+)\]/i);
-    if (buttonMatch) return cmd.replace(/@[a-z_]+/i, `@${buttonMatch[1]}`);
-  }
-  
-  // Return original if no match found
-  return cmd;
 }
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const query = searchParams.get("query") ?? "";
-  const kpKey = searchParams.get("keyplex_key") ?? process.env.KEYPLEX_API_KEY ?? "";
+  const model = (searchParams.get("model") as "bu-mini" | "bu-max") ?? "bu-mini";
 
   if (!query) {
     return new Response(JSON.stringify({ error: "Missing query" }), { status: 400 });
   }
 
-  // Keyplex API is called ONCE to get all steps, then executed locally
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -201,178 +105,179 @@ export async function GET(req: Request) {
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
 
       let sessionId: string | null = null;
+      let lastMessageCount = 0;
 
       try {
-        // ── 1. Create browser session ─────────────────────────────
-        send("step", { type: "info", desc: "Creating browser session..." });
+        // ── 1. Create Browser Use session with task ─────────────────────────────
+        send("step", { type: "info", desc: "Creating Browser Use session..." });
 
-        const session = await createSession(FIRECRAWL_API_KEY);
+        const session = await createSessionWithTask(query, model);
         
-        // Firecrawl returns { success: true, id: "...", liveViewUrl: "..." } on success
-        // OR { success: false, error: "..." } on failure
-        // OR just { id: "...", liveViewUrl: "..." } without success field
-        if (session.success === false) {
-          throw new Error(session.error ?? "Failed to create session");
-        }
-        
-        if (!session.id || !session.liveViewUrl) {
-          throw new Error("Invalid session response: missing id or liveViewUrl");
+        if (!session.id) {
+          throw new Error("Invalid session response: missing id");
         }
 
         sessionId = session.id;
 
-        // Send liveViewUrl immediately so iframe appears in UI
+        // Send session info immediately so iframe can appear
         send("session", {
-          sessionId:              session.id,
-          liveViewUrl:            session.liveViewUrl,
-          interactiveLiveViewUrl: session.interactiveLiveViewUrl,
+          sessionId: session.id,
+          liveViewUrl: session.liveUrl || null,
+          interactiveLiveViewUrl: session.liveUrl || null,
+          status: session.status,
+          model: session.model,
         });
 
         send("step", { type: "success", desc: `Session created. ID: ${session.id}` });
+        send("step", { type: "info", desc: `Task submitted: "${query}"` });
+        send("step", { type: "info", desc: `Using model: ${session.model}` });
 
-        // ── 2. Get ALL steps from Keyplex in ONE API call ──────────────────
-        // Then execute them locally without repeated API calls
+        // ── 2. Poll for task completion ──────────────────────────────────────
+        // Browser Use handles all browser commands automatically from natural language
+        send("step", { type: "info", desc: "Browser Use agent is executing the task..." });
 
-        let lastSnapshotOutput = "";
+        const maxPolls = 120; // 2 minutes max (1 second intervals)
+        let pollCount = 0;
+        let lastStatus = session.status;
 
-        if (!kpKey) {
-          // No LLM key — run a hardcoded demo for flight search
-          send("step", { type: "info", desc: "No Keyplex key provided — running demo flight search commands" });
-
-          const demoCmds = [
-            { cmd: `agent-browser open https://www.google.com/travel/flights`, reason: "Navigate to Google Flights" },
-            { cmd: `agent-browser snapshot -i`, reason: "Get page elements" },
-            { cmd: `agent-browser fill @e16 "Chennai"`, reason: "Enter departure city" },
-            { cmd: `agent-browser snapshot -i`, reason: "View updated page" },
-            { cmd: `agent-browser click @e5`, reason: "Select suggestion" },
-            { cmd: `agent-browser fill @e18 "Manchester"`, reason: "Enter destination" },
-            { cmd: `agent-browser snapshot -i`, reason: "View updated page" },
-          ];
-
-          for (let i = 0; i < demoCmds.length; i++) {
-            const { cmd, reason } = demoCmds[i];
-            send("command", { index: i, total: demoCmds.length, cmd, reason });
-
-            const result = await execCommand(sessionId, cmd, FIRECRAWL_API_KEY);
-            const output = result.stdout || result.output || result.result || JSON.stringify(result);
-            const hasError = result.stderr && result.stderr.includes("✗");
-
-            send("result", { index: i, cmd, output: output.slice(0, 500), success: !hasError });
-
-            if (cmd.includes("snapshot")) {
-              lastSnapshotOutput = output;
-            }
-
-            await new Promise(r => setTimeout(r, 800));
+        while (pollCount < maxPolls) {
+          await new Promise(r => setTimeout(r, 1000)); // Poll every 1 second
+          
+          const currentSession = await getSession(sessionId);
+          
+          // Send status update if changed
+          if (currentSession.status !== lastStatus) {
+            send("step", { 
+              type: currentSession.status === "error" ? "error" : "info", 
+              desc: `Session status: ${currentSession.status}` 
+            });
+            lastStatus = currentSession.status;
           }
 
-        } else {
-          // Call Keyplex API ONCE to get all steps
-          send("step", { type: "info", desc: "Requesting task plan from Keyplex (single API call)..." });
-
-          const { steps, summary, rawResponse } = await getAllSteps(query, kpKey);
-
-          // ── PHASE 0: Show raw Keyplex API response first ──────────────────
-          send("keyplex_response", { 
-            raw: rawResponse,
-            parsed: { steps, summary }
-          });
-
-          // Give user time to read the response
-          await new Promise(r => setTimeout(r, 2000));
-
-          if (steps.length === 0) {
-            send("step", { type: "error", desc: "Failed to generate steps: " + summary });
-            send("done", { message: summary });
-            return;
+          // Update live URL if it becomes available
+          if (currentSession.liveUrl) {
+            send("session", {
+              sessionId: currentSession.id,
+              liveViewUrl: currentSession.liveUrl,
+              interactiveLiveViewUrl: currentSession.liveUrl,
+              status: currentSession.status,
+              model: currentSession.model,
+            });
           }
 
-          send("step", { type: "success", desc: `Plan received: ${steps.length} steps to execute` });
-
-          // ── PHASE 1: Show all planned steps upfront ──────────────────
-          send("plan", { 
-            steps: steps.map((s, i) => ({ index: i, cmd: s.cmd, reason: s.reason })),
-            total: steps.length,
-            summary 
-          });
-
-          // Give user time to see the plan
-          await new Promise(r => setTimeout(r, 2000));
-
-          // ── PHASE 2: Execute steps one by one with verification ──────
-          send("step", { type: "info", desc: "Starting execution..." });
-
-          for (let i = 0; i < steps.length; i++) {
-            let { cmd, reason } = steps[i];
-
-            // Resolve placeholder refs using last snapshot output
-            if (lastSnapshotOutput && cmd.includes("@")) {
-              cmd = resolveRef(cmd, lastSnapshotOutput);
-            }
-
-            // Notify which step is starting
-            send("command", { index: i, total: steps.length, cmd, reason, status: "executing" });
-
-            // Give browser time to prepare (longer for open/navigate actions)
-            const isOpenCmd = cmd.includes("open ");
-            const isClickCmd = cmd.includes("click ");
-            const isFillCmd = cmd.includes("fill ");
-            
-            if (isOpenCmd) {
-              await new Promise(r => setTimeout(r, 500)); // Extra time before opening URL
-            }
-
-            // Execute the command in the live browser
-            const result = await execCommand(sessionId, cmd, FIRECRAWL_API_KEY);
-            const output = result.stdout || result.output || result.result || JSON.stringify(result);
-            const hasError = result.stderr && result.stderr.includes("✗");
-
-            // Send result of this step
-            send("result", { index: i, cmd, output: output.slice(0, 1500), success: !hasError });
-
-            // Store snapshot output for ref resolution in future steps
-            if (cmd.includes("snapshot")) {
-              lastSnapshotOutput = output;
-            }
-
-            // Wait for browser to complete the action with appropriate delays
-            if (isOpenCmd) {
-              // Wait longer for page to fully load
-              send("step", { type: "info", desc: `Waiting for page to load...` });
-              await new Promise(r => setTimeout(r, 3000));
-            } else if (isClickCmd || isFillCmd) {
-              // Wait for click/fill action to complete
-              await new Promise(r => setTimeout(r, 1500));
-              
-              // Auto-snapshot after click/fill to verify and get updated refs
-              if (!steps[i + 1]?.cmd.includes("snapshot")) {
-                send("step", { type: "info", desc: `Taking verification snapshot...` });
-                const verifyResult = await execCommand(sessionId, "agent-browser snapshot -i", FIRECRAWL_API_KEY);
-                const verifyOutput = verifyResult.stdout || verifyResult.output || verifyResult.result || "";
-                lastSnapshotOutput = verifyOutput;
-                send("snapshot", { index: i, output: verifyOutput.slice(0, 1500) });
-                await new Promise(r => setTimeout(r, 500));
+          // Try to get messages for progress updates
+          try {
+            const messages = await getSessionMessages(sessionId);
+            if (messages.length > lastMessageCount) {
+              const newMessages = messages.slice(lastMessageCount);
+              for (const msg of newMessages) {
+                send("message", { 
+                  role: msg.role, 
+                  content: msg.content,
+                  timestamp: msg.timestamp 
+                });
+                
+                // Send as step for visibility
+                if (msg.content && msg.content.length < 500) {
+                  send("step", { 
+                    type: "info", 
+                    desc: `${msg.role}: ${msg.content.substring(0, 200)}${msg.content.length > 200 ? '...' : ''}` 
+                  });
+                }
               }
-            } else {
-              // Standard delay between steps
-              await new Promise(r => setTimeout(r, 1000));
+              lastMessageCount = messages.length;
             }
-
-            // Mark step as complete
-            send("step_complete", { index: i, total: steps.length, success: !hasError });
+          } catch {
+            // Messages endpoint may not be available - continue polling
           }
 
-          send("summary", { text: summary });
+          // Check if task is complete
+          if (currentSession.status === "idle" || currentSession.status === "stopped") {
+            send("step", { type: "success", desc: "Task completed successfully!" });
+            
+            // Get final output
+            if (currentSession.output) {
+              send("result", { 
+                output: currentSession.output,
+                success: true 
+              });
+              
+              const outputStr = typeof currentSession.output === 'string' 
+                ? currentSession.output 
+                : JSON.stringify(currentSession.output, null, 2);
+              
+              send("summary", { text: outputStr });
+            }
+            
+            // Send cost info
+            if (currentSession.totalCostUsd) {
+              send("step", { 
+                type: "info", 
+                desc: `Total cost: $${currentSession.totalCostUsd}` 
+              });
+            }
+            
+            break;
+          }
+
+          // Check for error status
+          if (currentSession.status === "error") {
+            send("step", { type: "error", desc: "Task encountered an error" });
+            
+            if (currentSession.output) {
+              send("result", { 
+                output: currentSession.output,
+                success: false 
+              });
+            }
+            break;
+          }
+
+          // Check for timeout
+          if (currentSession.status === "timed_out") {
+            send("step", { type: "error", desc: "Task timed out" });
+            break;
+          }
+
+          pollCount++;
+          
+          // Send progress indicator every 10 seconds
+          if (pollCount % 10 === 0) {
+            send("step", { 
+              type: "info", 
+              desc: `Still working... (${pollCount}s elapsed)` 
+            });
+          }
         }
 
-        send("done", { message: "Agent finished. See live browser panel above." });
+        if (pollCount >= maxPolls) {
+          send("step", { type: "error", desc: "Polling timeout reached. Task may still be running." });
+        }
+
+        send("done", { message: "Agent finished. See browser panel for results." });
 
       } catch (err: unknown) {
-        send("agent_error", { message: err instanceof Error ? err.message : String(err) });
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        
+        // Handle specific errors
+        if (errorMessage.includes("quota") || errorMessage.includes("limit")) {
+          send("agent_error", { 
+            message: "API quota exceeded. Please check your Browser Use account at cloud.browser-use.com" 
+          });
+        } else if (errorMessage.includes("401") || errorMessage.includes("unauthorized")) {
+          send("agent_error", { 
+            message: "Invalid API key. Please check your BROWSER_USE_API_KEY environment variable." 
+          });
+        } else {
+          send("agent_error", { message: errorMessage });
+        }
       } finally {
         controller.close();
+        // Don't immediately stop the session - let user view results
+        // Session will auto-stop when keepAlive is false
         if (sessionId) {
-          setTimeout(() => deleteSession(sessionId!, FIRECRAWL_API_KEY), 300_000);
+          // Stop session after 5 minutes to clean up
+          setTimeout(() => stopSession(sessionId!), 300_000);
         }
       }
     },
@@ -380,9 +285,9 @@ export async function GET(req: Request) {
 
   return new Response(stream, {
     headers: {
-      "Content-Type":  "text/event-stream",
+      "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
-      Connection:      "keep-alive",
+      Connection: "keep-alive",
     },
   });
 }
@@ -390,7 +295,7 @@ export async function GET(req: Request) {
 // POST endpoint for more complex requests
 export async function POST(req: Request) {
   const body = await req.json();
-  const { query, keyplex_key } = body;
+  const { query, model } = body;
 
   if (!query) {
     return new Response(JSON.stringify({ error: "Missing query" }), { status: 400 });
@@ -398,7 +303,7 @@ export async function POST(req: Request) {
 
   const url = new URL(req.url);
   url.searchParams.set("query", query);
-  if (keyplex_key) url.searchParams.set("keyplex_key", keyplex_key);
+  if (model) url.searchParams.set("model", model);
   
   return GET(new Request(url.toString()));
 }

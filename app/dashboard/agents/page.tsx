@@ -78,20 +78,23 @@ interface Artifact {
   url?: string
 }
 
-interface FirecrawlSession {
+interface BrowserUseSession {
   id: string
-  cdpUrl?: string
   liveViewUrl: string
   interactiveLiveViewUrl?: string
+  status?: "created" | "idle" | "running" | "stopped" | "timed_out" | "error"
+  model?: "bu-mini" | "bu-max"
 }
 
-interface FirecrawlResponse {
+interface BrowserUseResponse {
   success?: boolean
   id?: string
-  cdpUrl?: string
+  sessionId?: string
   liveViewUrl?: string
+  liveUrl?: string
   interactiveLiveViewUrl?: string
-  result?: string
+  status?: string
+  output?: unknown
   error?: string
   message?: string
 }
@@ -117,8 +120,8 @@ export default function AgentsPage() {
   const [generatedDocData, setGeneratedDocData] = useState<DocData | null>(null)
   const [generatedSlidesData, setGeneratedSlidesData] = useState<SlidesData | null>(null)
   
-  // Firecrawl Browser Session State
-  const [browserSession, setBrowserSession] = useState<FirecrawlSession | null>(null)
+  // Browser Use Session State
+  const [browserSession, setBrowserSession] = useState<BrowserUseSession | null>(null)
   const [showBrowserPanel, setShowBrowserPanel] = useState(false)
   const [isBrowserLoading, setIsBrowserLoading] = useState(false)
   const [browserResults, setBrowserResults] = useState<string[]>([])
@@ -140,7 +143,7 @@ export default function AgentsPage() {
   useEffect(() => {
     return () => {
       if (browserSession?.id) {
-        fetch("/api/firecrawl", {
+        fetch("/api/browser-use", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "close", sessionId: browserSession.id }),
@@ -149,27 +152,27 @@ export default function AgentsPage() {
     }
   }, [browserSession])
 
-  // Create Firecrawl browser session
+  // Create Browser Use session
   const createBrowserSession = useCallback(async () => {
     setIsBrowserLoading(true)
     try {
-      const response = await fetch("/api/firecrawl", {
+      const response = await fetch("/api/browser-use", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "create" }),
       })
 
-      const data: FirecrawlResponse = await response.json()
+      const data: BrowserUseResponse = await response.json()
 
       if (!response.ok || !data.id) {
         throw new Error(data.error || "Failed to create browser session")
       }
 
-      const session: FirecrawlSession = {
+      const session: BrowserUseSession = {
         id: data.id,
-        cdpUrl: data.cdpUrl || "",
-        liveViewUrl: data.liveViewUrl || "",
-        interactiveLiveViewUrl: data.interactiveLiveViewUrl || "",
+        liveViewUrl: data.liveViewUrl || data.liveUrl || "",
+        interactiveLiveViewUrl: data.interactiveLiveViewUrl || data.liveUrl || "",
+        status: data.status as BrowserUseSession["status"],
       }
 
       setBrowserSession(session)
@@ -183,35 +186,35 @@ export default function AgentsPage() {
     }
   }, [])
 
-  // Execute code in browser session using agent-browser (bash) commands
-  const executeBrowserCode = useCallback(async (code: string, language: string = "bash") => {
+  // Dispatch a task to an existing Browser Use session
+  const dispatchBrowserTask = useCallback(async (task: string) => {
     if (!browserSession?.id) return null
 
     try {
-      const response = await fetch("/api/firecrawl", {
+      const response = await fetch("/api/browser-use", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "execute",
+          action: "dispatch",
           sessionId: browserSession.id,
-          code,
-          language,
+          task,
         }),
       })
 
-      const data: FirecrawlResponse = await response.json()
+      const data: BrowserUseResponse = await response.json()
 
       if (!response.ok) {
-        throw new Error(data.error || "Failed to execute code")
+        throw new Error(data.error || "Failed to dispatch task")
       }
 
-      if (data.result) {
-        setBrowserResults(prev => [...prev, data.result!])
+      if (data.output) {
+        const outputStr = typeof data.output === 'string' ? data.output : JSON.stringify(data.output)
+        setBrowserResults(prev => [...prev, outputStr])
       }
 
       return data
     } catch (error) {
-      console.error("Error executing browser code:", error)
+      console.error("Error dispatching browser task:", error)
       return null
     }
   }, [browserSession])
@@ -221,7 +224,7 @@ export default function AgentsPage() {
     if (!browserSession?.id) return
 
     try {
-      await fetch("/api/firecrawl", {
+      await fetch("/api/browser-use", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "close", sessionId: browserSession.id }),
@@ -235,7 +238,7 @@ export default function AgentsPage() {
     }
   }, [browserSession])
 
-  // Handle "Work with me" button click - Uses FIRE-1 model with SSE streaming
+  // Handle "Work with me" button click - Uses Browser Use API with SSE streaming
   const handleWorkWithMe = async () => {
     if (!currentTask.trim()) return
 
@@ -255,7 +258,7 @@ export default function AgentsPage() {
         {
           id: crypto.randomUUID(),
           type: "browsing",
-          description: "Starting FIRE-1 browser agent...",
+          description: "Starting Browser Use agent...",
           timestamp: new Date(),
         }
       ]
@@ -268,8 +271,8 @@ export default function AgentsPage() {
     ))
 
     try {
-      // Use the new /api/agent endpoint with SSE streaming
-      // FIRE-1 handles ALL browser commands automatically from natural language
+      // Use the /api/agent endpoint with SSE streaming
+      // Browser Use handles ALL browser commands automatically from natural language
       const eventSource = new EventSource(`/api/agent?query=${encodeURIComponent(currentTask)}`);
       
       let rawOutput = "";
@@ -419,12 +422,13 @@ export default function AgentsPage() {
 
       eventSource.addEventListener("session", (e) => {
         const data = JSON.parse(e.data);
-        // Set browser session with liveViewUrl from Firecrawl
+        // Set browser session with liveViewUrl from Browser Use
         setBrowserSession({
           id: data.sessionId,
-          cdpUrl: data.cdpUrl,
-          liveViewUrl: data.liveViewUrl,
-          interactiveLiveViewUrl: data.interactiveLiveViewUrl,
+          liveViewUrl: data.liveViewUrl || data.liveUrl || "",
+          interactiveLiveViewUrl: data.interactiveLiveViewUrl || data.liveUrl || "",
+          status: data.status,
+          model: data.model,
         });
         setShowBrowserPanel(true);
         setIsBrowserLoading(false);
@@ -457,7 +461,7 @@ export default function AgentsPage() {
                   {
                     id: crypto.randomUUID(),
                     type: "success",
-                    description: "FIRE-1 completed the task",
+                    description: "Browser Use agent completed the task",
                     timestamp: new Date(),
                   }
                 ]
@@ -487,11 +491,13 @@ export default function AgentsPage() {
           // Ignore parse errors
         }
         
-        // Format user-friendly message for quota errors
-        let displayMsg = errorMsg;
-        if (errorMsg.includes("QUOTA_EXCEEDED") || errorMsg.toLowerCase().includes("quota exceeded") || errorMsg.toLowerCase().includes("token quota")) {
-          displayMsg = "Your Keyplex API token quota has been exceeded. Please upgrade your plan at https://keyplex.ai/account#billing to continue using the AI-powered browser agent.";
-        }
+  // Format user-friendly message for quota errors
+  let displayMsg = errorMsg;
+  if (errorMsg.includes("quota") || errorMsg.toLowerCase().includes("limit")) {
+    displayMsg = "API quota exceeded. Please check your Browser Use account at cloud.browser-use.com";
+  } else if (errorMsg.includes("401") || errorMsg.includes("unauthorized")) {
+    displayMsg = "Invalid API key. Please check your BROWSER_USE_API_KEY environment variable.";
+  }
         
         setMessages(prev => prev.map(m => 
           m.id === assistantMessageId 
@@ -517,7 +523,7 @@ export default function AgentsPage() {
         
         // Provide helpful error message
         const errorContent = eventSource.readyState === EventSource.CONNECTING
-          ? "Connection error: Unable to establish connection to agent API. Please check that the KEYPLEX_API_KEY is configured in your environment variables."
+          ? "Connection error: Unable to establish connection to agent API. Please check that the BROWSER_USE_API_KEY is configured in your environment variables."
           : "Connection error: Lost connection to agent API. The server may have encountered an error processing your request.";
         
         setMessages(prev => prev.map(m => 
@@ -540,7 +546,7 @@ export default function AgentsPage() {
     }
   }
 
-  // Legacy handler for manual command execution (kept for reference)
+  // Legacy handler for manual task dispatch (kept for reference)
   const handleWorkWithMeLegacy = async () => {
     if (!currentTask.trim()) return
 
@@ -601,10 +607,11 @@ export default function AgentsPage() {
           : m
       ))
 
-      const result = await executeBrowserCode(cmd.code, cmd.language || "bash")
+      const result = await dispatchBrowserTask(cmd.code)
       
-      if (result?.result) {
-        allResults.push(result.result)
+      if (result?.output) {
+        const outputStr = typeof result.output === 'string' ? result.output : JSON.stringify(result.output)
+        allResults.push(outputStr)
       }
       
       if (i < commands.length - 1) {
@@ -639,9 +646,9 @@ export default function AgentsPage() {
     setCurrentTask("")
   }
 
-  // Generate agent-browser commands for Firecrawl browser automation
-  // agent-browser is a CLI pre-installed in Firecrawl sandbox with 40+ commands
-  // Use language: "bash" with agent-browser commands (NOT Playwright Node code which requires async wrapper)
+  // Generate natural language tasks for Browser Use
+  // Browser Use handles browser automation automatically from plain English descriptions
+  // No need for specific commands - just describe what you want done
   const generateAgentBrowserCommands = (task: string): Array<{ code: string; description: string; language: string }> => {
     const taskLower = task.toLowerCase()
     
