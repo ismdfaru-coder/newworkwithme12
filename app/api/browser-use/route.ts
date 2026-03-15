@@ -11,15 +11,29 @@ const getAuthHeaders = () => ({
   "Content-Type": "application/json",
 })
 
-interface BrowserUseTaskResponse {
+// Response from POST /tasks - only returns id and sessionId
+interface TaskCreatedResponse {
   id: string
-  status: "pending" | "running" | "finished" | "failed" | "stopped"
-  output?: unknown
-  liveUrl?: string
-  live_url?: string
-  createdAt?: string
-  finishedAt?: string
+  sessionId: string
+}
+
+// Response from GET /tasks/{id}
+interface TaskView {
+  id: string
+  sessionId: string
+  task: string
+  status: "created" | "started" | "finished" | "stopped"
+  output?: string | null
+  isSuccess?: boolean | null
+  cost?: string | null
   error?: string
+}
+
+// Response from GET /sessions/{id}
+interface SessionView {
+  id: string
+  status: "active" | "stopped"
+  liveUrl?: string | null
 }
 
 // Create a new task and run it
@@ -37,8 +51,6 @@ export async function POST(request: NextRequest) {
 
     // Create and run a new task
     if (action === "create" || action === "run") {
-      console.log("[v0] Creating Browser Use task...", task ? `with task: ${task}` : "")
-      
       const requestBody = {
         task: task || "Navigate to google.com",
       }
@@ -51,7 +63,6 @@ export async function POST(request: NextRequest) {
 
       if (!response.ok) {
         const errorText = await response.text()
-        console.log("[v0] Create task error:", response.status, errorText)
         
         if (response.status === 401 || response.status === 403) {
           return NextResponse.json(
@@ -66,24 +77,38 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      const data: BrowserUseTaskResponse = await response.json()
-      console.log("[v0] Task created:", data.id, "status:", data.status)
+      const data: TaskCreatedResponse = await response.json()
+      
+      // Fetch session to get liveUrl
+      let liveUrl: string | null = null
+      try {
+        const sessionResponse = await fetch(`${BROWSER_USE_API_URL}/sessions/${data.sessionId}`, {
+          method: "GET",
+          headers: getAuthHeaders(),
+        })
+        
+        if (sessionResponse.ok) {
+          const sessionData: SessionView = await sessionResponse.json()
+          liveUrl = sessionData.liveUrl || null
+        }
+      } catch (e) {
+        // Ignore session fetch errors
+      }
       
       return NextResponse.json({
         success: true,
         id: data.id,
-        sessionId: data.id,
+        sessionId: data.sessionId,
         taskId: data.id,
-        status: data.status || "running",
-        liveViewUrl: data.liveUrl || data.live_url || null,
-        liveUrl: data.liveUrl || data.live_url || null,
+        status: "started",
+        liveViewUrl: liveUrl,
+        liveUrl: liveUrl,
       })
     }
 
     // Get task status
     if (action === "status" && (sessionId || taskId)) {
       const id = taskId || sessionId
-      console.log("[v0] Getting task status:", id)
       
       const response = await fetch(`${BROWSER_USE_API_URL}/tasks/${id}`, {
         method: "GET",
@@ -92,34 +117,48 @@ export async function POST(request: NextRequest) {
 
       if (!response.ok) {
         const errorText = await response.text()
-        console.log("[v0] Get task error:", response.status, errorText)
         return NextResponse.json(
           { error: `Browser Use API error: ${response.status} - ${errorText}` },
           { status: response.status }
         )
       }
 
-      const data: BrowserUseTaskResponse = await response.json()
-      console.log("[v0] Task status:", data.id, "status:", data.status)
+      const data: TaskView = await response.json()
+      
+      // Fetch session to get liveUrl
+      let liveUrl: string | null = null
+      try {
+        const sessionResponse = await fetch(`${BROWSER_USE_API_URL}/sessions/${data.sessionId}`, {
+          method: "GET",
+          headers: getAuthHeaders(),
+        })
+        
+        if (sessionResponse.ok) {
+          const sessionData: SessionView = await sessionResponse.json()
+          liveUrl = sessionData.liveUrl || null
+        }
+      } catch (e) {
+        // Ignore session fetch errors
+      }
       
       return NextResponse.json({
         success: true,
         id: data.id,
-        sessionId: data.id,
+        sessionId: data.sessionId,
         taskId: data.id,
         status: data.status,
-        liveViewUrl: data.liveUrl || data.live_url || null,
-        liveUrl: data.liveUrl || data.live_url || null,
+        liveViewUrl: liveUrl,
+        liveUrl: liveUrl,
         output: data.output,
         error: data.error,
-        finishedAt: data.finishedAt,
+        isSuccess: data.isSuccess,
+        cost: data.cost,
       })
     }
 
     // Stop a task
     if ((action === "stop" || action === "close") && (sessionId || taskId)) {
       const id = taskId || sessionId
-      console.log("[v0] Stopping task:", id)
       
       // v2 API uses PUT to stop task
       const response = await fetch(`${BROWSER_USE_API_URL}/tasks/${id}/stop`, {
@@ -128,8 +167,7 @@ export async function POST(request: NextRequest) {
       })
 
       if (!response.ok) {
-        const errorText = await response.text()
-        console.log("[v0] Stop task error (may already be stopped):", response.status, errorText)
+        // May already be stopped, that's okay
       }
 
       return NextResponse.json({ success: true, message: "Task stopped" })
@@ -137,8 +175,6 @@ export async function POST(request: NextRequest) {
 
     // Dispatch additional task (same as create for v2 API)
     if (action === "dispatch") {
-      console.log("[v0] Dispatching new task:", task)
-      
       const requestBody = {
         task: task,
       }
@@ -157,16 +193,32 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      const data: BrowserUseTaskResponse = await response.json()
+      const data: TaskCreatedResponse = await response.json()
+      
+      // Fetch session to get liveUrl
+      let liveUrl: string | null = null
+      try {
+        const sessionResponse = await fetch(`${BROWSER_USE_API_URL}/sessions/${data.sessionId}`, {
+          method: "GET",
+          headers: getAuthHeaders(),
+        })
+        
+        if (sessionResponse.ok) {
+          const sessionData: SessionView = await sessionResponse.json()
+          liveUrl = sessionData.liveUrl || null
+        }
+      } catch (e) {
+        // Ignore session fetch errors
+      }
       
       return NextResponse.json({
         success: true,
         id: data.id,
-        sessionId: data.id,
+        sessionId: data.sessionId,
         taskId: data.id,
-        status: data.status || "running",
-        liveViewUrl: data.liveUrl || data.live_url || null,
-        liveUrl: data.liveUrl || data.live_url || null,
+        status: "started",
+        liveViewUrl: liveUrl,
+        liveUrl: liveUrl,
       })
     }
 
@@ -197,8 +249,6 @@ export async function GET(request: NextRequest) {
 
   try {
     if (taskId) {
-      console.log("[v0] Getting task info:", taskId)
-      
       const response = await fetch(`${BROWSER_USE_API_URL}/tasks/${taskId}`, {
         method: "GET",
         headers: getAuthHeaders(),
@@ -212,18 +262,36 @@ export async function GET(request: NextRequest) {
         )
       }
 
-      const data: BrowserUseTaskResponse = await response.json()
+      const data: TaskView = await response.json()
+      
+      // Fetch session to get liveUrl
+      let liveUrl: string | null = null
+      try {
+        const sessionResponse = await fetch(`${BROWSER_USE_API_URL}/sessions/${data.sessionId}`, {
+          method: "GET",
+          headers: getAuthHeaders(),
+        })
+        
+        if (sessionResponse.ok) {
+          const sessionData: SessionView = await sessionResponse.json()
+          liveUrl = sessionData.liveUrl || null
+        }
+      } catch (e) {
+        // Ignore session fetch errors
+      }
+      
       return NextResponse.json({
         success: true,
         id: data.id,
-        sessionId: data.id,
+        sessionId: data.sessionId,
         taskId: data.id,
         status: data.status,
-        liveViewUrl: data.liveUrl || data.live_url || null,
-        liveUrl: data.liveUrl || data.live_url || null,
+        liveViewUrl: liveUrl,
+        liveUrl: liveUrl,
         output: data.output,
         error: data.error,
-        finishedAt: data.finishedAt,
+        isSuccess: data.isSuccess,
+        cost: data.cost,
       })
     }
 
