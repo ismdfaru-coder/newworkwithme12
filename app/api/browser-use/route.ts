@@ -1,206 +1,181 @@
 import { NextRequest, NextResponse } from "next/server"
 
-// Browser Use API v3 - Session-based agent API
+// Browser Use API v1 - Task-based agent API
 // Documentation: https://docs.browser-use.com/cloud/api-reference
-const BROWSER_USE_API_URL = "https://api.browser-use.com/api/v3"
-const BROWSER_USE_API_KEY = process.env.BROWSER_USE_API_KEY || "bu_7DCoBFfKI2IaGqA8S6tHOA2fLQmk0UghmERu8RTzXyg"
+const BROWSER_USE_API_URL = "https://api.browser-use.com/api/v1"
+const BROWSER_USE_API_KEY = process.env.BROWSER_USE_API_KEY || ""
 
-interface BrowserUseSessionResponse {
+// Helper to get auth headers - uses Bearer token
+const getAuthHeaders = () => ({
+  "Authorization": `Bearer ${BROWSER_USE_API_KEY}`,
+  "Content-Type": "application/json",
+})
+
+interface BrowserUseTaskResponse {
   id: string
-  status: "created" | "idle" | "running" | "stopped" | "timed_out" | "error"
-  model: "bu-mini" | "bu-max"
-  title?: string | null
+  status: "pending" | "running" | "finished" | "failed" | "stopped"
   output?: unknown
-  outputSchema?: Record<string, unknown> | null
-  liveUrl?: string | null
-  profileId?: string | null
-  workspaceId?: string | null
-  proxyCountryCode?: string | null
-  maxCostUsd?: string | null
-  totalInputTokens?: number
-  totalOutputTokens?: number
-  proxyUsedMb?: string
-  llmCostUsd?: string
-  proxyCostUsd?: string
-  totalCostUsd?: string
-  createdAt: string
-  updatedAt: string
+  live_url?: string
+  created_at?: string
+  finished_at?: string
+  error?: string
 }
 
-interface BrowserUseMessage {
-  role: string
-  content: string
-  timestamp?: string
+interface BrowserUseRunResponse {
+  task_id: string
+  live_url?: string
 }
 
-// Create a new browser session and optionally dispatch a task
+// Create a new task and run it
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { action, sessionId, task, model = "bu-mini", keepAlive = false } = body
+    const { action, sessionId, task, taskId } = body
 
-    // Create a new browser session (with or without task)
+    if (!BROWSER_USE_API_KEY) {
+      return NextResponse.json(
+        { error: "BROWSER_USE_API_KEY environment variable is not set" },
+        { status: 500 }
+      )
+    }
+
+    // Create and run a new task
     if (action === "create" || action === "run") {
-      console.log("[v0] Creating Browser Use session...", task ? `with task: ${task}` : "idle session")
+      console.log("[v0] Creating Browser Use task...", task ? `with task: ${task}` : "")
       
-      const requestBody: {
-        task?: string
-        model: string
-        keepAlive: boolean
-        proxyCountryCode?: string
-      } = {
-        model,
-        keepAlive,
-        proxyCountryCode: "us",
-      }
-      
-      // If task is provided, the session will execute it immediately
-      if (task) {
-        requestBody.task = task
+      const requestBody = {
+        task: task || "Navigate to google.com",
       }
 
-      const response = await fetch(`${BROWSER_USE_API_URL}/sessions`, {
+      const response = await fetch(`${BROWSER_USE_API_URL}/run-task`, {
         method: "POST",
-        headers: {
-          "x-api-key": BROWSER_USE_API_KEY,
-          "Content-Type": "application/json",
-        },
+        headers: getAuthHeaders(),
         body: JSON.stringify(requestBody),
       })
 
       if (!response.ok) {
         const errorText = await response.text()
-        console.log("[v0] Create session error:", response.status, errorText)
+        console.log("[v0] Create task error:", response.status, errorText)
+        
+        if (response.status === 401) {
+          return NextResponse.json(
+            { error: "Invalid API key. Please check your BROWSER_USE_API_KEY environment variable." },
+            { status: 401 }
+          )
+        }
+        
         return NextResponse.json(
           { error: `Browser Use API error: ${response.status} - ${errorText}` },
           { status: response.status }
         )
       }
 
-      const data: BrowserUseSessionResponse = await response.json()
-      console.log("[v0] Session created:", data.id, "status:", data.status)
+      const data: BrowserUseRunResponse = await response.json()
+      console.log("[v0] Task created:", data.task_id, "live_url:", data.live_url)
       
-      // Return in a format compatible with the existing frontend
       return NextResponse.json({
         success: true,
-        id: data.id,
-        sessionId: data.id,
-        status: data.status,
-        liveViewUrl: data.liveUrl || null,
-        liveUrl: data.liveUrl || null,
-        model: data.model,
-        output: data.output,
-        totalCostUsd: data.totalCostUsd,
-        createdAt: data.createdAt,
+        id: data.task_id,
+        sessionId: data.task_id,
+        taskId: data.task_id,
+        status: "running",
+        liveViewUrl: data.live_url || null,
+        liveUrl: data.live_url || null,
       })
     }
 
-    // Dispatch a task to an existing session
-    if (action === "dispatch" && sessionId) {
-      console.log("[v0] Dispatching task to session:", sessionId)
+    // Get task status
+    if (action === "status" && (sessionId || taskId)) {
+      const id = taskId || sessionId
+      console.log("[v0] Getting task status:", id)
       
-      if (!task) {
-        return NextResponse.json(
-          { error: "Task is required when dispatching to existing session" },
-          { status: 422 }
-        )
-      }
-
-      const response = await fetch(`${BROWSER_USE_API_URL}/sessions`, {
-        method: "POST",
-        headers: {
-          "x-api-key": BROWSER_USE_API_KEY,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          sessionId,
-          task,
-          model,
-          keepAlive,
-        }),
+      const response = await fetch(`${BROWSER_USE_API_URL}/task/${id}`, {
+        method: "GET",
+        headers: getAuthHeaders(),
       })
 
       if (!response.ok) {
         const errorText = await response.text()
-        console.log("[v0] Dispatch task error:", response.status, errorText)
+        console.log("[v0] Get task error:", response.status, errorText)
         return NextResponse.json(
           { error: `Browser Use API error: ${response.status} - ${errorText}` },
           { status: response.status }
         )
       }
 
-      const data: BrowserUseSessionResponse = await response.json()
-      console.log("[v0] Task dispatched:", data.id, "status:", data.status)
+      const data: BrowserUseTaskResponse = await response.json()
+      console.log("[v0] Task status:", data.id, "status:", data.status)
       
       return NextResponse.json({
         success: true,
         id: data.id,
         sessionId: data.id,
+        taskId: data.id,
         status: data.status,
-        liveViewUrl: data.liveUrl || null,
-        liveUrl: data.liveUrl || null,
-        model: data.model,
+        liveViewUrl: data.live_url || null,
+        liveUrl: data.live_url || null,
         output: data.output,
+        error: data.error,
+        finishedAt: data.finished_at,
       })
     }
 
-    // Stop a session or task
-    if (action === "stop" && sessionId) {
-      console.log("[v0] Stopping session:", sessionId)
+    // Stop a task
+    if ((action === "stop" || action === "close") && (sessionId || taskId)) {
+      const id = taskId || sessionId
+      console.log("[v0] Stopping task:", id)
       
-      const strategy = body.strategy || "session" // "session" destroys sandbox, "task" keeps it alive
-      
-      const response = await fetch(`${BROWSER_USE_API_URL}/sessions/${sessionId}/stop`, {
+      const response = await fetch(`${BROWSER_USE_API_URL}/stop-task`, {
         method: "POST",
-        headers: {
-          "x-api-key": BROWSER_USE_API_KEY,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ strategy }),
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ task_id: id }),
       })
 
       if (!response.ok) {
         const errorText = await response.text()
-        console.log("[v0] Stop session error:", response.status, errorText)
+        console.log("[v0] Stop task error (may already be stopped):", response.status, errorText)
+      }
+
+      return NextResponse.json({ success: true, message: "Task stopped" })
+    }
+
+    // Dispatch additional task (same as create for v1 API)
+    if (action === "dispatch") {
+      console.log("[v0] Dispatching new task:", task)
+      
+      const requestBody = {
+        task: task,
+      }
+
+      const response = await fetch(`${BROWSER_USE_API_URL}/run-task`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify(requestBody),
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
         return NextResponse.json(
           { error: `Browser Use API error: ${response.status} - ${errorText}` },
           { status: response.status }
         )
       }
 
-      const data: BrowserUseSessionResponse = await response.json()
+      const data: BrowserUseRunResponse = await response.json()
+      
       return NextResponse.json({
         success: true,
-        id: data.id,
-        status: data.status,
-        message: "Session stopped",
+        id: data.task_id,
+        sessionId: data.task_id,
+        taskId: data.task_id,
+        status: "running",
+        liveViewUrl: data.live_url || null,
+        liveUrl: data.live_url || null,
       })
-    }
-
-    // Delete a session (alias for stop with strategy=session)
-    if (action === "close" && sessionId) {
-      console.log("[v0] Closing session:", sessionId)
-      
-      const response = await fetch(`${BROWSER_USE_API_URL}/sessions/${sessionId}/stop`, {
-        method: "POST",
-        headers: {
-          "x-api-key": BROWSER_USE_API_KEY,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ strategy: "session" }),
-      })
-
-      if (!response.ok) {
-        // Session may already be stopped/deleted
-        const errorText = await response.text()
-        console.log("[v0] Close session error (may already be closed):", response.status, errorText)
-      }
-
-      return NextResponse.json({ success: true, message: "Session closed" })
     }
 
     return NextResponse.json(
-      { error: "Invalid action. Use 'create', 'run', 'dispatch', 'stop', or 'close'" },
+      { error: "Invalid action. Use 'create', 'run', 'status', 'dispatch', 'stop', or 'close'" },
       { status: 400 }
     )
   } catch (error) {
@@ -212,46 +187,25 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// Get session status, messages, or list sessions
+// Get task status
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
-  const sessionId = searchParams.get("sessionId")
-  const action = searchParams.get("action") // "status", "messages", or null for list
+  const taskId = searchParams.get("taskId") || searchParams.get("sessionId")
+
+  if (!BROWSER_USE_API_KEY) {
+    return NextResponse.json(
+      { error: "BROWSER_USE_API_KEY environment variable is not set" },
+      { status: 500 }
+    )
+  }
 
   try {
-    // Get specific session info
-    if (sessionId) {
-      // Get session messages
-      if (action === "messages") {
-        console.log("[v0] Getting session messages:", sessionId)
-        
-        const response = await fetch(`${BROWSER_USE_API_URL}/sessions/${sessionId}/messages`, {
-          method: "GET",
-          headers: {
-            "x-api-key": BROWSER_USE_API_KEY,
-          },
-        })
-
-        if (!response.ok) {
-          const errorText = await response.text()
-          return NextResponse.json(
-            { error: `Browser Use API error: ${response.status} - ${errorText}` },
-            { status: response.status }
-          )
-        }
-
-        const data: BrowserUseMessage[] = await response.json()
-        return NextResponse.json({ success: true, messages: data })
-      }
+    if (taskId) {
+      console.log("[v0] Getting task info:", taskId)
       
-      // Get session status (default)
-      console.log("[v0] Getting session info:", sessionId)
-      
-      const response = await fetch(`${BROWSER_USE_API_URL}/sessions/${sessionId}`, {
+      const response = await fetch(`${BROWSER_USE_API_URL}/task/${taskId}`, {
         method: "GET",
-        headers: {
-          "x-api-key": BROWSER_USE_API_KEY,
-        },
+        headers: getAuthHeaders(),
       })
 
       if (!response.ok) {
@@ -262,46 +216,29 @@ export async function GET(request: NextRequest) {
         )
       }
 
-      const data: BrowserUseSessionResponse = await response.json()
+      const data: BrowserUseTaskResponse = await response.json()
       return NextResponse.json({
         success: true,
         id: data.id,
         sessionId: data.id,
+        taskId: data.id,
         status: data.status,
-        liveViewUrl: data.liveUrl || null,
-        liveUrl: data.liveUrl || null,
-        model: data.model,
+        liveViewUrl: data.live_url || null,
+        liveUrl: data.live_url || null,
         output: data.output,
-        totalCostUsd: data.totalCostUsd,
-        createdAt: data.createdAt,
-        updatedAt: data.updatedAt,
+        error: data.error,
+        finishedAt: data.finished_at,
       })
     }
 
-    // List all sessions
-    console.log("[v0] Listing all sessions...")
-    
-    const response = await fetch(`${BROWSER_USE_API_URL}/sessions`, {
-      method: "GET",
-      headers: {
-        "x-api-key": BROWSER_USE_API_KEY,
-      },
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      return NextResponse.json(
-        { error: `Browser Use API error: ${response.status} - ${errorText}` },
-        { status: response.status }
-      )
-    }
-
-    const data = await response.json()
-    return NextResponse.json({ success: true, sessions: data })
-  } catch (error) {
-    console.error("Error fetching Browser Use session:", error)
     return NextResponse.json(
-      { error: "Failed to fetch session info" },
+      { error: "taskId or sessionId parameter required" },
+      { status: 400 }
+    )
+  } catch (error) {
+    console.error("Error fetching Browser Use task:", error)
+    return NextResponse.json(
+      { error: "Failed to fetch task info" },
       { status: 500 }
     )
   }
