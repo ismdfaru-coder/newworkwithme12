@@ -422,11 +422,14 @@ export default function AgentsPage() {
 
       eventSource.addEventListener("session", (e) => {
         const data = JSON.parse(e.data);
+        console.log("[v0] Session event received:", data);
         // Set browser session with liveViewUrl from Browser Use
+        const liveUrl = data.liveViewUrl || data.liveUrl || data.live_url || "";
+        console.log("[v0] Live URL extracted:", liveUrl);
         setBrowserSession({
           id: data.sessionId,
-          liveViewUrl: data.liveViewUrl || data.liveUrl || "",
-          interactiveLiveViewUrl: data.interactiveLiveViewUrl || data.liveUrl || "",
+          liveViewUrl: liveUrl,
+          interactiveLiveViewUrl: liveUrl,
           status: data.status,
           model: data.model,
         });

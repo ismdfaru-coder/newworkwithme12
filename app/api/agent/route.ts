@@ -26,18 +26,27 @@ interface BrowserUseTaskResponse {
 }
 
 async function createTask(task: string): Promise<BrowserUseTaskResponse> {
+  console.log("[v0] Creating task with Browser Use API v2...");
+  console.log("[v0] API URL:", `${BROWSER_USE_API_URL}/tasks`);
+  console.log("[v0] API Key present:", !!BROWSER_USE_API_KEY);
+  
   const res = await fetch(`${BROWSER_USE_API_URL}/tasks`, {
     method: "POST",
     headers: getAuthHeaders(),
     body: JSON.stringify({ task }),
   });
   
+  console.log("[v0] Response status:", res.status);
+  
   if (!res.ok) {
     const errText = await res.text();
+    console.log("[v0] Error response:", errText);
     throw new Error(`Failed to create task: ${res.status} - ${errText}`);
   }
   
-  return res.json();
+  const data = await res.json();
+  console.log("[v0] Task created response:", JSON.stringify(data, null, 2));
+  return data;
 }
 
 async function getTask(taskId: string): Promise<BrowserUseTaskResponse> {
@@ -48,10 +57,13 @@ async function getTask(taskId: string): Promise<BrowserUseTaskResponse> {
   
   if (!res.ok) {
     const errText = await res.text();
+    console.log("[v0] Get task error:", errText);
     throw new Error(`Failed to get task: ${res.status} - ${errText}`);
   }
   
-  return res.json();
+  const data = await res.json();
+  console.log("[v0] Get task response:", JSON.stringify(data, null, 2));
+  return data;
 }
 
 async function stopTask(taskId: string): Promise<void> {
