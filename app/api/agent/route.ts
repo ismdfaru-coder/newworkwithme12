@@ -1,36 +1,32 @@
 // app/api/agent/route.ts
-// Browser Use API v1 implementation
+// Browser Use API v2 implementation
 // Creates a task and polls for completion with streaming updates
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const BROWSER_USE_API_URL = "https://api.browser-use.com/api/v1";
+const BROWSER_USE_API_URL = "https://api.browser-use.com/api/v2";
 const BROWSER_USE_API_KEY = process.env.BROWSER_USE_API_KEY || "";
 
-// Helper to get auth headers
+// Helper to get auth headers - uses X-Browser-Use-API-Key header
 const getAuthHeaders = () => ({
-  "Authorization": `Bearer ${BROWSER_USE_API_KEY}`,
+  "X-Browser-Use-API-Key": BROWSER_USE_API_KEY,
   "Content-Type": "application/json",
 });
-
-interface BrowserUseRunResponse {
-  task_id: string;
-  live_url?: string;
-}
 
 interface BrowserUseTaskResponse {
   id: string;
   status: "pending" | "running" | "finished" | "failed" | "stopped";
   output?: unknown;
+  liveUrl?: string;
   live_url?: string;
-  created_at?: string;
-  finished_at?: string;
+  createdAt?: string;
+  finishedAt?: string;
   error?: string;
 }
 
-async function runTask(task: string): Promise<BrowserUseRunResponse> {
-  const res = await fetch(`${BROWSER_USE_API_URL}/run-task`, {
+async function createTask(task: string): Promise<BrowserUseTaskResponse> {
+  const res = await fetch(`${BROWSER_USE_API_URL}/tasks`, {
     method: "POST",
     headers: getAuthHeaders(),
     body: JSON.stringify({ task }),
@@ -38,14 +34,14 @@ async function runTask(task: string): Promise<BrowserUseRunResponse> {
   
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Failed to run task: ${res.status} - ${errText}`);
+    throw new Error(`Failed to create task: ${res.status} - ${errText}`);
   }
   
   return res.json();
 }
 
 async function getTask(taskId: string): Promise<BrowserUseTaskResponse> {
-  const res = await fetch(`${BROWSER_USE_API_URL}/task/${taskId}`, {
+  const res = await fetch(`${BROWSER_USE_API_URL}/tasks/${taskId}`, {
     method: "GET",
     headers: getAuthHeaders(),
   });
@@ -59,10 +55,9 @@ async function getTask(taskId: string): Promise<BrowserUseTaskResponse> {
 }
 
 async function stopTask(taskId: string): Promise<void> {
-  await fetch(`${BROWSER_USE_API_URL}/stop-task`, {
-    method: "POST",
+  await fetch(`${BROWSER_USE_API_URL}/tasks/${taskId}/stop`, {
+    method: "PUT",
     headers: getAuthHeaders(),
-    body: JSON.stringify({ task_id: taskId }),
   }).catch(() => {});
 }
 
@@ -88,31 +83,32 @@ export async function GET(req: Request) {
       let taskId: string | null = null;
 
       try {
-        // ── 1. Create and run Browser Use task ─────────────────────────────
+        // ── 1. Create Browser Use task ─────────────────────────────
         send("step", { type: "info", desc: "Creating Browser Use task..." });
 
-        const runResponse = await runTask(query);
+        const taskResponse = await createTask(query);
         
-        if (!runResponse.task_id) {
-          throw new Error("Invalid response: missing task_id");
+        if (!taskResponse.id) {
+          throw new Error("Invalid response: missing task id");
         }
 
-        taskId = runResponse.task_id;
+        taskId = taskResponse.id;
+        const liveUrl = taskResponse.liveUrl || taskResponse.live_url || null;
 
         // Send session info immediately so iframe can appear
         send("session", {
           sessionId: taskId,
-          liveViewUrl: runResponse.live_url || null,
-          interactiveLiveViewUrl: runResponse.live_url || null,
-          liveUrl: runResponse.live_url || null,
-          status: "running",
+          liveViewUrl: liveUrl,
+          interactiveLiveViewUrl: liveUrl,
+          liveUrl: liveUrl,
+          status: taskResponse.status || "running",
         });
 
         send("step", { type: "success", desc: `Task created. ID: ${taskId}` });
         send("step", { type: "info", desc: `Task: "${query}"` });
 
-        if (runResponse.live_url) {
-          send("step", { type: "info", desc: `Live view available at: ${runResponse.live_url}` });
+        if (liveUrl) {
+          send("step", { type: "info", desc: `Live view available` });
         }
 
         // ── 2. Poll for task completion ──────────────────────────────────────
@@ -120,20 +116,21 @@ export async function GET(req: Request) {
 
         const maxPolls = 180; // 3 minutes max (1 second intervals)
         let pollCount = 0;
-        let lastStatus = "running";
+        let lastStatus = taskResponse.status || "running";
 
         while (pollCount < maxPolls) {
           await new Promise(r => setTimeout(r, 1000)); // Poll every 1 second
           
           const currentTask = await getTask(taskId);
+          const currentLiveUrl = currentTask.liveUrl || currentTask.live_url || null;
           
           // Update live URL if it becomes available
-          if (currentTask.live_url) {
+          if (currentLiveUrl) {
             send("session", {
               sessionId: currentTask.id,
-              liveViewUrl: currentTask.live_url,
-              interactiveLiveViewUrl: currentTask.live_url,
-              liveUrl: currentTask.live_url,
+              liveViewUrl: currentLiveUrl,
+              interactiveLiveViewUrl: currentLiveUrl,
+              liveUrl: currentLiveUrl,
               status: currentTask.status,
             });
           }
@@ -208,7 +205,7 @@ export async function GET(req: Request) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         
         // Handle specific errors
-        if (errorMessage.includes("401") || errorMessage.includes("Unauthorized") || errorMessage.includes("unauthorized")) {
+        if (errorMessage.includes("401") || errorMessage.includes("403") || errorMessage.includes("Unauthorized") || errorMessage.includes("unauthorized")) {
           send("agent_error", { 
             message: "Invalid API key. Please check your BROWSER_USE_API_KEY environment variable." 
           });
