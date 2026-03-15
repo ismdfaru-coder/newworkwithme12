@@ -1797,12 +1797,21 @@ export default function AgentsPage() {
 
             {/* Browser iframe */}
             <div className="flex-1 overflow-hidden bg-white dark:bg-zinc-900">
-              <iframe
-                src={browserSession.interactiveLiveViewUrl}
-                className="h-full w-full border-0"
-                title="Live Browser Session"
-                allow="clipboard-read; clipboard-write"
-              />
+              {browserSession.interactiveLiveViewUrl ? (
+                <iframe
+                  src={browserSession.interactiveLiveViewUrl}
+                  className="h-full w-full border-0"
+                  title="Live Browser Session"
+                  allow="clipboard-read; clipboard-write"
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center text-muted-foreground">
+                  <div className="text-center">
+                    <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2 text-orange-500" />
+                    <p>Waiting for browser session...</p>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Results section - styled to match Firecrawl */}
